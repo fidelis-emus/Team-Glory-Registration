@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == adminId;
+    }
+
+    // Volunteers collection
+    match /team_glory_members/{id} {
+      // Anyone can submit registration fields, provided the payload is valid:
+      allow create: if isValidVolunteer(request.resource.data);
+
+      // Only church admins can list, view, edit or delete submissions:
+      allow read, update, delete: if isChurchAdmin();
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isChurchAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == "fidelisemus@gmail.com" ||
+        request.auth.token.email == "admin@teamglory.com"
+      );
+    }
+
+    function isValidVolunteer(val) {
+      return val.fullName is string && val.fullName.size() > 0 && val.fullName.size() <= 200
+        && val.phoneNumber is string && val.phoneNumber.size() > 0 && val.phoneNumber.size() <= 50
+        && val.email is string && val.email.size() > 0 && val.email.size() <= 150
+        && val.gender is string && (val.gender == "Male" || val.gender == "Female")
+        && val.firstUnit is string && val.firstUnit.size() > 0
+        && val.secondUnit is string && val.secondUnit.size() > 0
+        && val.commitmentAgreed == true
+        && val.memberId is string && val.memberId.size() > 0;
+    }
+  }
+}

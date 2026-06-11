@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "volunteer": {
+      "title": "Volunteer Record",
+      "description": "Volunteer registration details for TEAM GLORY RCCG House of Glory, YP2",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "memberId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "whatsappNumber": { "type": "string" },
+        "email": { "type": "string" },
+        "gender": { "type": "string" },
+        "dateOfBirth": { "type": "string" },
+        "maritalStatus": { "type": "string" },
+        "address": { "type": "string" },
+        "churchDuration": { "type": "string" },
+        "churchMember": { "type": "boolean" },
+        "houseFellowshipStatus": { "type": "boolean" },
+        "houseFellowshipName": { "type": "string" },
+        "workersTrainingStatus": { "type": "string" },
+        "class": { "type": "string" },
+        "completionDate": { "type": "string" },
+        "enrollNextClass": { "type": "boolean" },
+        "firstUnit": { "type": "string" },
+        "secondUnit": { "type": "string" },
+        "flexibleUnit": { "type": "boolean" },
+        "skills": { "type": "array" },
+        "reasonForService": { "type": "string" },
+        "sundayAvailability": { "type": "boolean" },
+        "meetingsAvailability": { "type": "boolean" },
+        "trainingAvailability": { "type": "boolean" },
+        "programmesAvailability": { "type": "boolean" },
+        "recommendationType": { "type": "string" },
+        "recommendationName": { "type": "string" },
+        "recommendationPhone": { "type": "string" },
+        "commitmentAgreed": { "type": "boolean" },
+        "registrationDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fullName", "phoneNumber", "email", "gender", "firstUnit", "secondUnit", "commitmentAgreed", "memberId"]
+    }
+  },
+  "firestore": {
+    "/team_glory_members/{id}": {
+      "schema": "volunteer",
+      "description": "Registered volunteers list"
+    }
+  }
+}

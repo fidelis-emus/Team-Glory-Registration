@@ -1,0 +1,6 @@
+{
+  "name": "TEAM GLORY Volunteer Registration System",
+  "description": "The official volunteer onboarding and management system for RCCG House of Glory, YP2.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
