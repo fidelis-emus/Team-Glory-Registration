@@ -36,17 +36,35 @@
         "recommendationName": { "type": "string" },
         "recommendationPhone": { "type": "string" },
         "commitmentAgreed": { "type": "boolean" },
+        "assignedHodId": { "type": "string" },
         "registrationDate": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["fullName", "phoneNumber", "email", "gender", "firstUnit", "secondUnit", "commitmentAgreed", "memberId"]
+    },
+    "headOfDepartment": {
+      "title": "Head of Department Record",
+      "description": "Leader details of specific church ministry departments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "department": { "type": "string" },
+        "email": { "type": "string" },
+        "phoneNumber": { "type": "string" }
+      },
+      "required": ["fullName", "department"]
     }
   },
   "firestore": {
     "/team_glory_members/{id}": {
       "schema": "volunteer",
       "description": "Registered volunteers list"
+    },
+    "/heads_of_departments/{id}": {
+      "schema": "headOfDepartment",
+      "description": "Head of Departments register"
     }
   }
 }

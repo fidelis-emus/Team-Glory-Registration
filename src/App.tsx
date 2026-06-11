@@ -4,16 +4,47 @@ import WelcomeScreen from './components/WelcomeScreen';
 import RegistrationForm from './components/RegistrationForm';
 import SuccessScreen from './components/SuccessScreen';
 import AdminPanel from './components/AdminPanel';
-import { Sun, Moon, ShieldAlert, Heart, Calendar } from 'lucide-react';
+import { Sun, Moon, ArrowLeft } from 'lucide-react';
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState<'welcome' | 'form' | 'success' | 'admin'>('welcome');
+  const [portal, setPortal] = useState<'client' | 'admin'>(() => {
+    const path = window.location.pathname.toLowerCase().replace(/\/$/, '');
+    const hash = window.location.hash.toLowerCase();
+    const search = window.location.search.toLowerCase();
+    if (path === '/admin' || path.endsWith('/admin') || hash === '#/admin' || hash === '#admin' || search === '?admin' || search.includes('portal=admin')) {
+      return 'admin';
+    }
+    return 'client';
+  });
+
+  const [currentScreen, setCurrentScreen] = useState<'welcome' | 'form' | 'success'>('welcome');
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     // Check local preferences
     const stored = localStorage.getItem('team_glory_dark');
     return stored === 'true';
   });
   const [successMemberId, setSuccessMemberId] = useState<string>('');
+
+  // Handle URL updates / popstate for seamless backward/forward & manual navigation
+  useEffect(() => {
+    const handleUrlChange = () => {
+      const path = window.location.pathname.toLowerCase().replace(/\/$/, '');
+      const hash = window.location.hash.toLowerCase();
+      const search = window.location.search.toLowerCase();
+      if (path === '/admin' || path.endsWith('/admin') || hash === '#/admin' || hash === '#admin' || search === '?admin' || search.includes('portal=admin')) {
+        setPortal('admin');
+      } else {
+        setPortal('client');
+      }
+    };
+
+    window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('hashchange', handleUrlChange);
+    return () => {
+      window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('hashchange', handleUrlChange);
+    };
+  }, []);
 
   // Handle Dark mode class injection
   useEffect(() => {
@@ -36,6 +67,21 @@ export default function App() {
     setCurrentScreen('welcome');
   };
 
+  const navigateToPortal = (target: 'client' | 'admin') => {
+    if (target === 'admin') {
+      window.location.hash = '#/admin';
+      setPortal('admin');
+    } else {
+      // Return to client portal
+      if (window.location.pathname === '/admin' || window.location.pathname.endsWith('/admin')) {
+        window.history.pushState(null, '', '/');
+      }
+      window.location.hash = '';
+      setPortal('client');
+      setCurrentScreen('welcome');
+    }
+  };
+
   const bgStyle = darkMode 
     ? { background: 'radial-gradient(circle at top left, #003366, #001a33)' }
     : { background: 'radial-gradient(circle at top left, #dfefff, #f1f5f9)' };
@@ -52,40 +98,43 @@ export default function App() {
           
           {/* Logo / Brand Name */}
           <div 
-            onClick={handleRestart}
-            className="flex items-center gap-2.5 cursor-pointer select-none group"
+            onClick={() => {
+              if (portal === 'client') {
+                handleRestart();
+              }
+            }}
+            className={`flex items-center gap-2.5 select-none group ${portal === 'client' ? 'cursor-pointer' : ''}`}
           >
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-400 text-white flex items-center justify-center font-black shadow-md shadow-blue-500/10 group-hover:scale-105 transition-transform">
-              G
+            <div className={`w-10 h-10 rounded-xl bg-gradient-to-tr transition-transform flex items-center justify-center font-black shadow-md ${
+              portal === 'admin' 
+                ? 'from-red-600 to-amber-500 shadow-red-500/10' 
+                : 'from-blue-600 to-indigo-400 shadow-blue-500/10 group-hover:scale-105'
+            } text-white`}>
+              {portal === 'admin' ? '🛡️' : 'G'}
             </div>
             <div>
-              <span className="text-[10px] font-bold text-blue-600 dark:text-blue-300 uppercase tracking-widest block leading-tight">RCCG HOUSE OF GLORY, YP2</span>
+              <span className={`text-[10px] font-bold uppercase tracking-widest block leading-tight ${
+                portal === 'admin' ? 'text-red-500 dark:text-red-400' : 'text-blue-600 dark:text-blue-300'
+              }`}>
+                RCCG HOUSE OF GLORY, YP2
+              </span>
               <h1 className="text-base sm:text-lg font-black text-gray-950 dark:text-white tracking-tight leading-none mt-0.5 font-sans">
-                TEAM GLORY
+                {portal === 'admin' ? 'ADMIN SECURE PORTAL' : 'TEAM GLORY'}
               </h1>
             </div>
           </div>
 
-          {/* Active Navigation Actions */}
+          {/* Active Navigation Actions depending on portal */}
           <div className="flex items-center gap-1.5 sm:gap-3">
-            {currentScreen !== 'admin' ? (
+            {portal === 'admin' ? (
               <button
-                onClick={() => setCurrentScreen('admin')}
-                className="inline-flex items-center gap-1.5 bg-blue-500/15 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300 hover:bg-blue-500/25 px-4 py-2 rounded-full text-xs font-bold transition-all cursor-pointer"
-                title="Admin Dashboard"
+                onClick={() => navigateToPortal('client')}
+                className="inline-flex items-center gap-1.5 bg-gradient-to-r from-slate-600 to-slate-800 hover:from-slate-700 hover:to-slate-900 text-white px-4 py-2 rounded-full text-xs font-semibold shadow-sm transition-all cursor-pointer"
               >
-                <ShieldAlert className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Admin Access</span>
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Go to Client Site
               </button>
-            ) : (
-              <button
-                onClick={() => setCurrentScreen('welcome')}
-                className="inline-flex items-center gap-1.5 bg-gradient-to-r from-blue-600 to-indigo-500 text-white hover:opacity-90 px-4 py-2 rounded-full text-xs font-semibold shadow-sm transition-all cursor-pointer"
-              >
-                <Heart className="w-3.5 h-3.5 fill-current" />
-                Volunteer Registration
-              </button>
-            )}
+            ) : null}
 
             {/* Dark Mode Checker Switch */}
             <button
@@ -102,43 +151,51 @@ export default function App() {
       {/* GLOBAL BODY CONTAINER */}
       <main className="flex-grow flex flex-col justify-center py-8">
         <AnimatePresence mode="wait">
-          <motion.div
-            key={currentScreen}
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -15 }}
-            transition={{ duration: 0.35 }}
-            className="w-full"
-          >
-            {/* Screen Router */}
-            {currentScreen === 'welcome' && (
-              <WelcomeScreen 
-                onProceed={() => setCurrentScreen('form')} 
-                darkMode={darkMode}
-              />
-            )}
+          {portal === 'client' ? (
+            <motion.div
+              key="client-portal"
+              initial={{ opacity: 0, scale: 0.99, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.99, y: -10 }}
+              transition={{ duration: 0.3 }}
+              className="w-full"
+            >
+              {currentScreen === 'welcome' && (
+                <WelcomeScreen 
+                  onProceed={() => setCurrentScreen('form')} 
+                  darkMode={darkMode}
+                />
+              )}
 
-            {currentScreen === 'form' && (
-              <RegistrationForm 
-                onSuccess={handleRegistrationSuccess}
-                onBack={() => setCurrentScreen('welcome')}
-                darkMode={darkMode}
-              />
-            )}
+              {currentScreen === 'form' && (
+                <RegistrationForm 
+                  onSuccess={handleRegistrationSuccess}
+                  onBack={() => setCurrentScreen('welcome')}
+                  darkMode={darkMode}
+                />
+              )}
 
-            {currentScreen === 'success' && (
-              <SuccessScreen 
-                memberId={successMemberId} 
-                onReset={handleRestart}
-              />
-            )}
-
-            {currentScreen === 'admin' && (
+              {currentScreen === 'success' && (
+                <SuccessScreen 
+                  memberId={successMemberId} 
+                  onReset={handleRestart}
+                />
+              )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="admin-portal"
+              initial={{ opacity: 0, scale: 0.99, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.99, y: -10 }}
+              transition={{ duration: 0.25 }}
+              className="w-full"
+            >
               <AdminPanel 
                 darkMode={darkMode}
               />
-            )}
-          </motion.div>
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -146,13 +203,24 @@ export default function App() {
       <footer className="border-t border-white/15 dark:border-white/10 py-6 text-center text-xs text-slate-500 dark:text-blue-200/70 bg-white/25 dark:bg-slate-950/20 backdrop-blur-md transition-colors duration-200 print:hidden">
         <div className="max-w-7xl mx-auto px-4 space-y-1">
           <p>© {new Date().getFullYear()} RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL</p>
-          <p className="text-[10px] text-gray-500/80 dark:text-gray-400 flex justify-center items-center gap-1.5 font-medium">
-            <span>System Status:</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
-            <span className="text-emerald-600 dark:text-emerald-400">● Operational</span>
+          <div className="text-[10px] text-gray-500/80 dark:text-gray-400 flex flex-wrap justify-center items-center gap-x-3 gap-y-1 font-medium">
+            <span className="flex items-center gap-1.5">
+              <span>System Status:</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+              <span className="text-emerald-600 dark:text-emerald-400">● Operational</span>
+            </span>
             <span className="opacity-40">|</span>
-            <span>Version 2.4.0-PRO</span>
-          </p>
+            <span>Version 2.5.0-PRO</span>
+            
+            {portal === 'client' && (
+              <>
+                <span className="opacity-40">|</span>
+                <span className="text-slate-400/80 dark:text-slate-500 select-none">
+                  Admin portal is isolated to `/admin` or `#/admin` URI.
+                </span>
+              </>
+            )}
+          </div>
         </div>
       </footer>
     </div>

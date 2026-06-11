@@ -21,6 +21,11 @@ service cloud.firestore {
       allow read, update, delete: if isChurchAdmin();
     }
 
+    // Heads of Departments collection
+    match /heads_of_departments/{id} {
+      allow read, write: if isChurchAdmin();
+    }
+
     // Helper functions
     function isSignedIn() {
       return request.auth != null;

@@ -45,10 +45,21 @@ export interface Volunteer {
   // Commitment
   commitmentAgreed: boolean;
   
+  // Assignment details
+  assignedHodId?: string;
+
   // Timestamps
   registrationDate: string; // YYYY-MM-DD
   createdAt: string; // ISO String
   updatedAt: string; // ISO String
+}
+
+export interface HeadOfDepartment {
+  id: string;
+  fullName: string;
+  department: string;
+  email?: string;
+  phoneNumber?: string;
 }
 
 export interface AdminUser {
