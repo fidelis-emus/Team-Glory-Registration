@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db } from '../firebase';
+import { auth, db, getFirebaseAuthErrorMessage } from '../firebase';
 import { 
   signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, User as FirebaseUser,
   GoogleAuthProvider, signInWithPopup
@@ -165,8 +165,6 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       addAuditLog("Admin Login", `Successful console authentication for email: ${authEmail}`);
     } catch (err: any) {
       console.warn("Auth failed, checking test backdoors:", err);
-      const errCode = err?.code || '';
-      const errMessage = err?.message || String(err);
       
       // If they are trying with the standard credentials, bypass any Firebase restriction or network error seamlessly
       if (isStandardDemoCreds) {
@@ -175,16 +173,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
         return;
       }
 
-      if (errCode === 'auth/operation-not-allowed') {
-        setAuthError(`Email/Password authentication provider is currently disabled in your Firebase console. Please go to your Firebase Console -> Authentication -> Sign-in Method, and click 'Add new provider' to enable 'Email/Password' log ins. Alternatively, you can use the 'Sign In with Google' button below which is enabled by default.`);
-        return;
-      }
-
-      let msg = errMessage;
-      if (errCode === 'auth/wrong-password' || errCode === 'auth/invalid-credential') {
-        msg = "Incorrect Email or Password. If you are logging in with standard demo credentials, please check for typos or register a new admin profile. You can also sign in instantly using the Google button.";
-      }
-      setAuthError(msg);
+      setAuthError(getFirebaseAuthErrorMessage(err));
     }
   };
 
@@ -201,7 +190,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       setAuthSuccess('Admin profile created successfully! Logging you in...');
       addAuditLog("Admin Sign Up", `New console account created: ${authEmail}`);
     } catch (err: any) {
-      setAuthError(err.message || 'Registration rejected.');
+      setAuthError(getFirebaseAuthErrorMessage(err));
     }
   };
 

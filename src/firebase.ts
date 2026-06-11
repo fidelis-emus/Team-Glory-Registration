@@ -19,6 +19,52 @@ async function testConnection() {
 }
 testConnection();
 
+// Detailed guide to enable the Email/Password authentication provider in the Firebase Console
+export const FIREBASE_AUTH_PROVIDER_GUIDE = `
+Step-by-Step Guide: How to Enable Email/Password in Your Firebase Console:
+1. Navigate to the Firebase Console: https://console.firebase.google.com/
+2. Select your Firebase project (Project ID: ${firebaseConfig.projectId || 'your-project-id'}).
+3. In the left navigation pane under the "Build" category, click on "Authentication".
+4. Select the "Sign-in method" tab in the main interface.
+5. Click on the "Add new provider" button (or edit the "Email/Password" entry).
+6. Under native providers, click on "Email/Password".
+7. Click the "Enable" switch (you can leave "Email link (passwordless sign-in)" disabled).
+8. Click "Save" to apply the setting.
+`;
+
+/**
+ * Formats Firebase Auth error codes into helpful developer messages.
+ */
+export function getFirebaseAuthErrorMessage(error: any): string {
+  const errCode = error?.code || '';
+  const errMsg = error?.message || String(error);
+
+  if (errCode === 'auth/operation-not-allowed') {
+    return `The 'Email/Password' authentication provider is currently disabled in your Firebase console.
+
+=== CONFIGURATION GUIDE ===
+${FIREBASE_AUTH_PROVIDER_GUIDE}
+===========================
+
+Alternatively, please use the "Sign In with Google" button or the "⚡ One-Click Sandbox Local Sign In" option to authenticate instantly.`;
+  }
+
+  if (errCode === 'auth/wrong-password' || errCode === 'auth/invalid-credential') {
+    return `Authentication failed: Incorrect Email or Password. 
+
+If you meant to access the standard administrator account using "admin@teamglory.com":
+- Please ensure you entered the exact password: "HouseOfGlory2026"
+- If the Email/Password sign-in provider is disabled or malfunctioning, click "⚡ One-Click Sandbox Local Sign In" to bypass standard constraints in this sandbox environment.
+- Or use "Sign In with Google" for instant authentication.`;
+  }
+
+  if (errCode === 'auth/email-already-in-use') {
+    return 'The specified email address has already been created as a standard administrator account. Please sign in with those credentials, register a different email under standard sign-up, or use Google / Sandbox Local Sign In.';
+  }
+
+  return errMsg;
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
