@@ -1,4 +1,4 @@
-import { Volunteer } from './types';
+import { Volunteer, HeadOfDepartment } from './types';
 
 export const MOCK_VOLUNTEERS: Volunteer[] = [
   {
@@ -197,3 +197,11 @@ export const MOCK_VOLUNTEERS: Volunteer[] = [
     updatedAt: "2026-06-02T16:12:00.000Z"
   }
 ];
+
+export const MOCK_HODS: HeadOfDepartment[] = [
+  { id: 'hod-1', fullName: 'Pastor Victor', department: 'Prayer', email: 'prayer.hod@teamglory.com', phoneNumber: '+234 801 111 2222' },
+  { id: 'hod-2', fullName: 'Deacon John Ade', department: 'Choir', email: 'choir.hod@teamglory.com', phoneNumber: '+234 802 222 3333' },
+  { id: 'hod-3', fullName: 'Sister Sarah Obi', department: 'Hospitality/Protocol', email: 'hospitality.hod@teamglory.com', phoneNumber: '+234 803 333 4444' },
+  { id: 'hod-4', fullName: 'Brother David Cole', department: 'Technical (Sound, Lighting, Projection)', email: 'tech.hod@teamglory.com', phoneNumber: '+234 804 444 5555' },
+];
+

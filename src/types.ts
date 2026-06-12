@@ -1,6 +1,5 @@
-export interface Volunteer {
+export interface BaseRegistration {
   id: string;
-  memberId: string;
   fullName: string;
   phoneNumber: string;
   whatsappNumber: string;
@@ -9,7 +8,16 @@ export interface Volunteer {
   dateOfBirth: string;
   maritalStatus: 'Single' | 'Married' | 'Divorced' | 'Widowed';
   address: string;
-  
+  createdAt: string; // ISO String
+  updatedAt: string; // ISO String
+}
+
+export interface FirstTimer extends BaseRegistration {}
+
+export interface Member extends BaseRegistration {}
+
+export interface Volunteer extends BaseRegistration {
+  memberId: string;
   // Church Details
   churchDuration: 'Less than 3 months' | '3–6 months' | '6–12 months' | 'Over 1 year';
   churchMember: boolean;
@@ -50,8 +58,27 @@ export interface Volunteer {
 
   // Timestamps
   registrationDate: string; // YYYY-MM-DD
-  createdAt: string; // ISO String
-  updatedAt: string; // ISO String
+}
+
+export interface FirstTimerWorker extends Volunteer {}
+export interface MemberWorker extends Volunteer {}
+export interface WorkerSectionRecord extends Volunteer {} // worker collection
+
+export interface TrainingRegistration extends BaseRegistration {
+  trainingProgram: 'Believers\' Class' | 'Baptismal Class' | 'Workers-in-Training' | 'School of Disciples' | 'Bible College' | 'I\'m not sure and would like guidance';
+}
+
+export interface HouseFellowshipRegistration extends BaseRegistration {
+  neighbourhood: string;
+  landmark: string;
+  confirmCorrect: boolean;
+  understandAssignment: boolean;
+  agreeContact: boolean;
+}
+
+export interface InterestGroupsRegistration extends BaseRegistration {
+  selectedGroups: string[]; // max 2
+  agreeOptional: boolean;
 }
 
 export interface HeadOfDepartment {

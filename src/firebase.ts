@@ -46,7 +46,7 @@ export function getFirebaseAuthErrorMessage(error: any): string {
 ${FIREBASE_AUTH_PROVIDER_GUIDE}
 ===========================
 
-Alternatively, please use the "Sign In with Google" button or the "⚡ One-Click Sandbox Local Sign In" option to authenticate instantly.`;
+Alternatively, please use the "Sign In with Google" button to authenticate instantly.`;
   }
 
   if (errCode === 'auth/wrong-password' || errCode === 'auth/invalid-credential') {
@@ -54,12 +54,11 @@ Alternatively, please use the "Sign In with Google" button or the "⚡ One-Click
 
 If you meant to access the standard administrator account using "admin@teamglory.com":
 - Please ensure you entered the exact password: "HouseOfGlory2026"
-- If the Email/Password sign-in provider is disabled or malfunctioning, click "⚡ One-Click Sandbox Local Sign In" to bypass standard constraints in this sandbox environment.
 - Or use "Sign In with Google" for instant authentication.`;
   }
 
   if (errCode === 'auth/email-already-in-use') {
-    return 'The specified email address has already been created as a standard administrator account. Please sign in with those credentials, register a different email under standard sign-up, or use Google / Sandbox Local Sign In.';
+    return 'The specified email address has already been created as a standard administrator account. Please sign in with those credentials, register a different email under standard sign-up, or use Google Sign-In.';
   }
 
   return errMsg;
