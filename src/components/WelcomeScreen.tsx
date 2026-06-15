@@ -4,9 +4,15 @@ import { ShieldCheck, Heart, ArrowRight } from 'lucide-react';
 interface WelcomeScreenProps {
   onProceed: () => void;
   darkMode: boolean;
+  branding?: {
+    logoBase64: string | null;
+    headerTitle: string;
+    headerSubtitle: string;
+    footerText: string;
+  };
 }
 
-export default function WelcomeScreen({ onProceed, darkMode }: WelcomeScreenProps) {
+export default function WelcomeScreen({ onProceed, darkMode, branding }: WelcomeScreenProps) {
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
       <motion.div
@@ -19,10 +25,10 @@ export default function WelcomeScreen({ onProceed, darkMode }: WelcomeScreenProp
           <Heart className="w-8 h-8 fill-blue-500/10 dark:fill-blue-405/10 animate-pulse" />
         </div>
         <h1 className="text-3xl sm:text-4xl font-black tracking-tight text-slate-800 dark:text-white mb-3">
-          Welcome to <span className="text-blue-600 dark:text-blue-400">TEAM GLORY!</span>
+          Welcome to <span className="text-blue-600 dark:text-blue-400">{branding?.headerSubtitle || 'TEAM GLORY!'}</span>
         </h1>
         <p className="text-sm sm:text-base text-slate-600 dark:text-blue-100/80 max-w-lg mx-auto font-medium leading-relaxed">
-          Thank you for your interest in serving at RCCG House of Glory, YP2. We believe every hand counts in the kingdom. Let's serve with excellence and purpose!
+          Thank you for your interest in serving at {branding?.headerTitle || 'RCCG House of Glory, YP2'}. We believe every hand counts in the kingdom. Let's serve with excellence and purpose!
         </p>
       </motion.div>
 

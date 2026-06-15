@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, query, where, getDocs, addDoc } from 'firebase/firestore';
 import { 
   User, BookOpen, Heart, CheckSquare, Sparkles, Building, Briefcase, 
   ChevronRight, ChevronLeft, Loader2, Save, Users, AlertCircle, 
@@ -14,6 +12,7 @@ interface RegistrationFormProps {
   onSuccess: (memberId: string) => void;
   onBack: () => void;
   darkMode: boolean;
+  sandboxBypassActive: boolean;
 }
 
 const MINISTRY_UNITS = [
@@ -143,7 +142,7 @@ const INTEREST_CATEGORIES: InterestCategory[] = [
   }
 ];
 
-export default function RegistrationForm({ onSuccess, onBack, darkMode }: RegistrationFormProps) {
+export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxBypassActive }: RegistrationFormProps) {
   // Screens navigation state
   const [screen, setScreen] = useState<FormScreen>('personal_info');
   const [currPathway, setCurrPathway] = useState<PathwayType | null>(null);
@@ -256,13 +255,38 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
     }
   };
 
+  // Helper to ensure API responses are actually JSON, which routes around static hosting fallbacks gracefully
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    try {
+      const resp = await fetch(url, options);
+      if (!resp.ok) {
+        throw new Error(`HTTP Error ${resp.status}`);
+      }
+      const contentType = resp.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Fallback page returned (Local Node server offline or static hosting active)');
+      }
+      const text = await resp.text();
+      if (text.trim().startsWith('<!')) {
+        throw new Error('HTML payload received (Local Node server offline or static hosting active)');
+      }
+      return JSON.parse(text);
+    } catch (err: any) {
+      console.warn(`[SafeFetch] Failed on ${url}:`, err.message);
+      throw err;
+    }
+  };
+
   // Safe Member ID Generator with padding
   const generateSpecialId = async (prefix: string, tableName: string): Promise<string> => {
     let currentCount = 0;
     try {
-      const q = query(collection(db, tableName));
-      const snapshot = await getDocs(q);
-      currentCount = snapshot.size;
+      const arr = await safeFetchJson(`/api/records/${tableName}`);
+      if (Array.isArray(arr)) {
+        currentCount = arr.length;
+      } else {
+        currentCount = Math.floor(Math.random() * 900);
+      }
     } catch (e) {
       console.warn(`Failed to retrieve count for ${tableName}, using random:`, e);
       currentCount = Math.floor(Math.random() * 900);
@@ -278,8 +302,6 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
   const triggerDuplicateCheck = async (): Promise<boolean> => {
     setErrorMessage(null);
     setCheckingDuplicates(true);
-    const cleanPhone = phoneNumber.trim();
-    const cleanEmail = email.trim().toLowerCase();
     const cleanName = fullName.trim();
 
     // Check localStorage mirror first to be fast
@@ -302,11 +324,8 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
           const arr = JSON.parse(stored);
           if (Array.isArray(arr)) {
             const match = arr.find((item: any) => {
-              const itemEmail = (item.email || '').toLowerCase().trim();
-              const itemPhone = (item.phoneNumber || '').trim();
               const itemName = (item.fullName || '').toLowerCase().trim();
-
-              return itemEmail === cleanEmail || (itemName === cleanName.toLowerCase() && itemPhone === cleanPhone);
+              return itemName === cleanName.toLowerCase();
             });
 
             if (match) {
@@ -321,7 +340,6 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       }
     }
 
-    // Check Cloud Firestore across all 8 segmented table collections
     const collectionsToCheck = [
       'first_timers',
       'first_timer_workers',
@@ -334,35 +352,26 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
     ];
 
     try {
-      const queries = collectionsToCheck.map(async (collName) => {
+      for (const collName of collectionsToCheck) {
         try {
-          // Query email match
-          const qEmail = query(collection(db, collName), where('email', '==', cleanEmail));
-          const snapEmail = await getDocs(qEmail);
-          if (!snapEmail.empty) return true;
-
-          // Query name + phone match
-          const qPhoneAndName = query(
-            collection(db, collName), 
-            where('fullName', '==', cleanName),
-            where('phoneNumber', '==', cleanPhone)
-          );
-          const snapPhoneName = await getDocs(qPhoneAndName);
-          if (!snapPhoneName.empty) return true;
+          const arr = await safeFetchJson(`/api/records/${collName}`);
+          if (Array.isArray(arr)) {
+            const match = arr.find((item: any) => {
+              const itemName = (item.fullName || '').toLowerCase().trim();
+              return itemName === cleanName.toLowerCase();
+            });
+            if (match) {
+              setErrorMessage("This personal information already exists in database. You cannot register the same person twice.");
+              setCheckingDuplicates(false);
+              return true;
+            }
+          }
         } catch (e) {
-          console.warn(`Query on collection ${collName} restricted or failed:`, e);
+          console.warn(`Query on database collection ${collName} failed:`, e);
         }
-        return false;
-      });
-
-      const results = await Promise.all(queries);
-      if (results.some(r => r === true)) {
-        setErrorMessage("This personal information already exists in our database. You cannot register the same person twice.");
-        setCheckingDuplicates(false);
-        return true; // Is duplicate
       }
     } catch (glErr) {
-      console.warn("Global Firestore duplicate check failed, proceeding safely:", glErr);
+      console.warn("Global duplicate check failed, proceeding safely:", glErr);
     }
 
     setCheckingDuplicates(false);
@@ -376,11 +385,9 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       setErrorMessage("Please enter your Full Name");
       return false;
     }
-    if (!phoneNumber.trim()) {
-      setErrorMessage("Please enter your Phone Number");
-      return false;
-    }
-    if (!email.trim() || !email.includes('@')) {
+    // phoneNumber is optional!
+    // email is optional! If entered, it must contain '@'
+    if (email.trim() && !email.includes('@')) {
       setErrorMessage("Please enter a valid Email Address");
       return false;
     }
@@ -540,6 +547,17 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
     }
   };
 
+  // Save registration helper to route dynamically via backend API endpoints
+  const saveRegistrationRecord = async (collectionName: string, data: any) => {
+    return await safeFetchJson(`/api/records/${collectionName}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    });
+  };
+
   // Submit NO-Workforce (First Timer / Member)
   const submitOfflinePersonal = async (pathway: 'first_timers' | 'members') => {
     setErrorMessage(null);
@@ -558,9 +576,9 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
         ...getBaseDataset()
       };
 
-      // 2. Save cloud
+      // 2. Save cloud or sandbox database
       try {
-        await addDoc(collection(db, pathway), docData);
+        await saveRegistrationRecord(pathway, docData);
       } catch (err) {
         console.warn("Cloud save was bypassed, stored locally first:", err);
       }
@@ -599,7 +617,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       };
 
       try {
-        await addDoc(collection(db, 'training_registrations'), docData);
+        await saveRegistrationRecord('training_registrations', docData);
       } catch (err) {
         console.warn("Bypassed cloud save for TR:", err);
       }
@@ -650,7 +668,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       };
 
       try {
-        await addDoc(collection(db, 'house_fellowship_registrations'), docData);
+        await saveRegistrationRecord('house_fellowship_registrations', docData);
       } catch (err) {
         console.warn("Bypassed cloud save for HF:", err);
       }
@@ -694,7 +712,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       };
 
       try {
-        await addDoc(collection(db, 'interest_groups'), docData);
+        await saveRegistrationRecord('interest_groups', docData);
       } catch (err) {
         console.warn("Bypassed cloud save for IG:", err);
       }
@@ -733,12 +751,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
       // Match HOD for first Choose Department
       let matchedHodId: string | undefined = undefined;
       try {
-        const qHods = query(collection(db, 'heads_of_departments'));
-        const snapshotHods = await getDocs(qHods);
-        const listHods: HeadOfDepartment[] = [];
-        snapshotHods.forEach((d) => {
-          listHods.push({ id: d.id, ...d.data() } as HeadOfDepartment);
-        });
+        const listHods: HeadOfDepartment[] = await safeFetchJson('/api/hods');
 
         const storedHodsRaw = localStorage.getItem('heads_of_departments');
         const localHods: HeadOfDepartment[] = storedHodsRaw ? JSON.parse(storedHodsRaw) : [];
@@ -786,11 +799,11 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode }: Regist
         assignedHodId: matchedHodId
       };
 
-      // Push Cloud DB
+      // Push Cloud DB / Sandbox
       try {
-        await addDoc(collection(db, targetCollection), docData);
+        await saveRegistrationRecord(targetCollection, docData);
         // Deprecated unified table for fallback syncing
-        await addDoc(collection(db, 'team_glory_members'), docData);
+        await saveRegistrationRecord('team_glory_members', docData);
       } catch (err) {
         console.warn("Bypassed cloud save for workforce:", err);
       }

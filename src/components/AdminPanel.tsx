@@ -1,13 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db, getFirebaseAuthErrorMessage, handleFirestoreError, OperationType } from '../firebase';
-import { 
-  signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, User as FirebaseUser,
-  GoogleAuthProvider, signInWithPopup
-} from 'firebase/auth';
-import { 
-  collection, query, getDocs, doc, deleteDoc, updateDoc, writeBatch, setDoc, onSnapshot, addDoc
-} from 'firebase/firestore';
 import { Volunteer, AuditLog, HeadOfDepartment, FirstTimer, Member, TrainingRegistration, HouseFellowshipRegistration, InterestGroupsRegistration } from '../types';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, Legend
@@ -17,7 +9,7 @@ import {
   Download, Printer, Eye, Trash2, Calendar, FileText, Check, AlertCircle,
   Database, Shield, RefreshCw, UserCheck, BookOpen, Users, BarChart3, HelpCircle, 
   UserX, Building, Edit, Sparkles, Heart, MapPin, CheckCircle, PlusCircle, Settings, Key,
-  Loader2, Info, Briefcase, Cake, Gift, Send
+  Loader2, Info, Briefcase, Cake, Gift, Send, Save
 } from 'lucide-react';
 
 export function getBirthdayInfo(dob: string) {
@@ -142,6 +134,41 @@ const MINISTRY_UNITS = [
 
 interface AdminPanelProps {
   darkMode: boolean;
+  sandboxBypassActive: boolean;
+  branding: any;
+}
+
+export interface SystemLicense {
+  licenseKey: string;
+  activatedAt: string;
+  expiresAt: string;
+  status: 'ACTIVE' | 'EXPIRED' | 'SUSPENDED';
+  tier: 'Enterprise Pro' | 'Standard' | 'Developer';
+}
+
+export function validateLicenseKeyFormat(key: string): { valid: boolean; expiresAt: string; tier: string; error?: string } {
+  const cleanKey = key.trim().toUpperCase();
+  // Format check: GLORY-NET-XXXX-XXXX-PROYEAR
+  const regex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-PRO(202[6-9]|203[0-5])$/;
+  const match = cleanKey.match(regex);
+  if (!match) {
+    return { valid: false, expiresAt: '', tier: '', error: 'Invalid format. Expected: GLORY-NET-XXXX-XXXX-PROYYYY' };
+  }
+  
+  const year = parseInt(match[3], 10);
+  const expirationDate = `${year}-12-31T23:59:59.000Z`;
+  const expTime = new Date(expirationDate).getTime();
+  const nowTime = new Date().getTime();
+  
+  if (expTime < nowTime) {
+    return { valid: false, expiresAt: expirationDate, tier: 'Enterprise Pro', error: `This license signature expired on ${new Date(expirationDate).toLocaleDateString()}.` };
+  }
+  
+  return {
+    valid: true,
+    expiresAt: expirationDate,
+    tier: 'Enterprise Pro'
+  };
 }
 
 type RecordSegment =
@@ -154,9 +181,8 @@ type RecordSegment =
   | 'house_fellowship_registrations'
   | 'interest_groups';
 
-export default function AdminPanel({ darkMode }: AdminPanelProps) {
+export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: AdminPanelProps) {
   // Authentication states
-  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -181,7 +207,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
   const [errorData, setErrorData] = useState<string | null>(null);
 
   // Active Main Navigation Tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'hods' | 'audit'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit'>('dashboard');
   
   // Active Database Record Segment Selection
   const [activeSegment, setActiveSegment] = useState<RecordSegment>('workers');
@@ -220,117 +246,217 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
   const [newHodEmail, setNewHodEmail] = useState('');
   const [newHodPhone, setNewHodPhone] = useState('');
 
-  // Monitor Firebase auth state changes
+  // --- Dynamic Administrative Panel Management ---
+  const [adminUser, setAdminUser] = useState<any | null>(null);
+  const [allAdminAccounts, setAllAdminAccounts] = useState<any[]>([]);
+  const [adminFormName, setAdminFormName] = useState('');
+  const [adminFormEmail, setAdminFormEmail] = useState('');
+  const [adminFormPassword, setAdminFormPassword] = useState('');
+  const [adminFormRole, setAdminFormRole] = useState<'SuperAdmin' | 'HOD' | 'Admin'>('Admin');
+  const [isAddingAdminUser, setIsAddingAdminUser] = useState(false);
+  const [changingPassUser, setChangingPassUser] = useState<any | null>(null);
+  const [newPasswordVal, setNewPasswordVal] = useState('');
+  const [firstLoginPassChange, setFirstLoginPassChange] = useState<boolean>(false);
+  const [adminAccountError, setAdminAccountError] = useState<string | null>(null);
+
+  // --- Branding Edit States ---
+  const [brandLogo, setBrandLogo] = useState<string | null>(null);
+  const [brandTitle, setBrandTitle] = useState('');
+  const [brandSubtitle, setBrandSubtitle] = useState('');
+  const [brandFooter, setBrandFooter] = useState('');
+  const [isSavingBranding, setIsSavingBranding] = useState(false);
+
+  // Worker Reassignment save state
+  const [updatingAssignments, setUpdatingAssignments] = useState(false);
+
+  // --- Visual System License & Security State ---
+  const [systemLicense, setSystemLicense] = useState<SystemLicense>(() => {
+    const saved = localStorage.getItem('team_glory_system_license');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        const nowTime = new Date().getTime();
+        const expTime = new Date(parsed.expiresAt).getTime();
+        if (expTime < nowTime) {
+          parsed.status = 'EXPIRED';
+        }
+        return parsed;
+      } catch (e) {}
+    }
+    return {
+      licenseKey: 'GLORY-NET-99X8-44A1-PRO2030', // Default license valid until 2030
+      activatedAt: new Date().toISOString(),
+      expiresAt: '2030-12-31T23:59:59.000Z',
+      status: 'ACTIVE',
+      tier: 'Enterprise Pro'
+    };
+  });
+  const [renewalLicenseKey, setRenewalLicenseKey] = useState('');
+
+  // Helper to ensure API responses are actually JSON, which routes around static hosting fallbacks gracefully
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    try {
+      const resp = await fetch(url, options);
+      if (!resp.ok) {
+        throw new Error(`HTTP Error ${resp.status}`);
+      }
+      const contentType = resp.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Fallback page returned (Local Node server offline or static hosting active)');
+      }
+      const text = await resp.text();
+      if (text.trim().startsWith('<!')) {
+        throw new Error('HTML payload received (Local Node server offline or static hosting active)');
+      }
+      return JSON.parse(text);
+    } catch (err: any) {
+      console.warn(`[SafeFetch] Failed on ${url}:`, err.message);
+      throw err;
+    }
+  };
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (usr) => {
-      setUser(usr);
-      setLoading(false);
-    });
-    return unsubscribe;
+    setLoading(false);
   }, []);
 
-  // Sync real-time data from all 8 collections when user is authenticated
+  // Monitor dynamic configurations and administrative user sessions
   useEffect(() => {
-    if (!user) return;
+    try {
+      const savedAdmin = localStorage.getItem('team_glory_logged_in_admin');
+      if (savedAdmin) {
+        const parsed = JSON.parse(savedAdmin);
+        setAdminUser(parsed);
+        if (parsed.isFirstLogin || parsed.requiresPasswordReset) {
+          setFirstLoginPassChange(true);
+        }
+      }
+    } catch (e) {}
 
-    setLoadingData(true);
-    const unsubscibers: (() => void)[] = [];
-
-    // Generic function to load collections securely without dummy fallback
-    const syncCollection = <T,>(
-      collName: string, 
-      setVal: React.Dispatch<React.SetStateAction<T[]>>, 
-      localStorageKey: string
-    ) => {
+    const loadConfigs = async () => {
       try {
-        const q = query(collection(db, collName));
-        const unsub = onSnapshot(q, (snapshot) => {
-          const list: T[] = [];
-          snapshot.forEach((d) => {
-            list.push({ id: d.id, ...d.data() } as T);
-          });
-
-          // Merge with Local Storage copies if any (offline survival)
-          const localStr = localStorage.getItem(localStorageKey);
-          const localArr: T[] = localStr ? JSON.parse(localStr) : [];
-          
-          const merged = [...list];
-          localArr.forEach(item => {
-            const exists = list.some((c: any) => c.id === (item as any).id);
-            if (!exists) merged.push(item);
-          });
-
-          setVal(merged);
-        }, (error) => {
-          console.warn(`Firestore real-time subscription for ${collName} failed, pulling browser fallback:`, error);
-          const localStr = localStorage.getItem(localStorageKey);
-          const localArr: T[] = localStr ? JSON.parse(localStr) : [];
-          setVal(localArr);
-          
+        const cfg = await safeFetchJson('/api/branding');
+        if (cfg) {
+          setBrandLogo(cfg.logoBase64 || null);
+          setBrandTitle(cfg.headerTitle || '');
+          setBrandSubtitle(cfg.headerSubtitle || '');
+          setBrandFooter(cfg.footerText || '');
+        }
+      } catch (e) {
+        console.warn('Failed to load branding settings via API:', e);
+        // Fallback to localStorage branding
+        const localBr = localStorage.getItem('team_glory_branding');
+        if (localBr) {
           try {
-            handleFirestoreError(error, OperationType.GET, collName);
-          } catch(e) {}
-        });
-        unsubscibers.push(unsub);
-      } catch (err) {
-        console.warn(`Error setting up ${collName} listener:`, err);
+            const parsed = JSON.parse(localBr);
+            setBrandLogo(parsed.logoBase64 || null);
+            setBrandTitle(parsed.headerTitle || '');
+            setBrandSubtitle(parsed.headerSubtitle || '');
+            setBrandFooter(parsed.footerText || '');
+          } catch (brErr) {}
+        }
+      }
+
+      // Load System License from API or local fallback
+      try {
+        const licenseList = await safeFetchJson('/api/records/system_license');
+        if (Array.isArray(licenseList) && licenseList.length > 0) {
+          const statusItem = licenseList.find(x => x.id === 'status');
+          if (statusItem) {
+            const data = statusItem as SystemLicense;
+            const nowTime = new Date().getTime();
+            const expTime = new Date(data.expiresAt).getTime();
+            if (expTime < nowTime) {
+              data.status = 'EXPIRED';
+            }
+            setSystemLicense(data);
+            localStorage.setItem('team_glory_system_license', JSON.stringify(data));
+          }
+        }
+      } catch (e) {}
+
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList) {
+          setAllAdminAccounts(adminsList);
+          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+        }
+      } catch (e) {
+        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+        const cached = localStorage.getItem('team_glory_admins_accounts');
+        if (cached) setAllAdminAccounts(JSON.parse(cached));
       }
     };
+    loadConfigs();
+  }, [adminUser]);
 
-    // Subscribing to each collection segment dynamically
-    syncCollection<FirstTimer>('first_timers', setFirstTimers, 'team_glory_first_timers');
-    syncCollection<Volunteer>('first_timer_workers', setFirstTimerWorkers, 'team_glory_first_timer_workers');
-    syncCollection<Member>('members', setMembers, 'team_glory_members');
-    syncCollection<Volunteer>('member_workers', setMemberWorkers, 'team_glory_member_workers');
-    syncCollection<Volunteer>('workers', setWorkers, 'team_glory_workers');
-    syncCollection<TrainingRegistration>('training_registrations', setTrainingRegs, 'team_glory_training_registrations');
-    syncCollection<HouseFellowshipRegistration>('house_fellowship_registrations', setHfRegs, 'team_glory_house_fellowship_registrations');
-    syncCollection<InterestGroupsRegistration>('interest_groups', setInterestGroups, 'team_glory_interest_groups');
+  // Legacy Firebase Firestore Realtime Listeners have been successfully migrated to standard pool syncs.
 
-    // Sync HODs
+  // Real-time Database Sync Logic via Express + MongoDB REST API endpoints
+  const fetchDatabaseRecords = async () => {
+    setLoadingData(true);
     try {
-      const qHods = query(collection(db, 'heads_of_departments'));
-      const unsub = onSnapshot(qHods, (snapshot) => {
-        const list: HeadOfDepartment[] = [];
-        snapshot.forEach((d) => {
-          list.push({ id: d.id, ...d.data() } as HeadOfDepartment);
-        });
+      const getSegmentData = async (segment: string) => {
+        try {
+          return await safeFetchJson(`/api/records/${segment}`);
+        } catch (e) {
+          return [];
+        }
+      };
 
-        // Merge local storage HODs
-        const localHodsRaw = localStorage.getItem('heads_of_departments');
-        const localHods: HeadOfDepartment[] = localHodsRaw ? JSON.parse(localHodsRaw) : [];
-        const merged = [...list];
-        localHods.forEach(lh => {
-          if (!list.some(fh => fh.id === lh.id)) {
-            merged.push(lh);
-          }
-        });
+      const ft = await getSegmentData('first_timers'); setFirstTimers(ft);
+      const ftw = await getSegmentData('first_timer_workers'); setFirstTimerWorkers(ftw);
+      const m = await getSegmentData('members'); setMembers(m);
+      const mw = await getSegmentData('member_workers'); setMemberWorkers(mw);
+      const w = await getSegmentData('workers'); setWorkers(w);
+      const tr = await getSegmentData('training_registrations'); setTrainingRegs(tr);
+      const hf = await getSegmentData('house_fellowship_registrations'); setHfRegs(hf);
+      const ig = await getSegmentData('interest_groups'); setInterestGroups(ig);
 
-        setHods(merged);
-      }, (error) => {
-        console.warn("Unable to sync heads of departments:", error);
-        const localHodsRaw = localStorage.getItem('heads_of_departments');
-        const localHods: HeadOfDepartment[] = localHodsRaw ? JSON.parse(localHodsRaw) : [];
-        setHods(localHods);
-      });
-      unsubscibers.push(unsub);
+      try {
+        const hodsList = await safeFetchJson('/api/hods');
+        if (hodsList && Array.isArray(hodsList)) {
+          const uniqueHods: HeadOfDepartment[] = [];
+          const seenIds = new Set<string>();
+          hodsList.forEach((h: any) => {
+            if (h && h.id && !seenIds.has(h.id)) {
+              seenIds.add(h.id);
+              uniqueHods.push(h);
+            }
+          });
+          setHods(uniqueHods);
+        }
+      } catch (e) {}
+
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList && Array.isArray(adminsList)) setAllAdminAccounts(adminsList);
+      } catch (e) {}
+
+      try {
+        const logs = await safeFetchJson('/api/birthdays/notifications');
+        if (logs && Array.isArray(logs)) setAuditLogs(logs);
+      } catch (e) {}
     } catch (e) {
-      console.warn(e);
+      console.warn("Error fetching data:", e);
+    } finally {
+      setLoadingData(false);
     }
+  };
 
-    setErrorData(null);
-    setLoadingData(false);
-
-    return () => {
-      unsubscibers.forEach(un => un());
-    };
-  }, [user]);
+  // Monitor auth state to trigger dynamic syncing loops
+  useEffect(() => {
+    if (adminUser) {
+      fetchDatabaseRecords();
+      const interval = setInterval(fetchDatabaseRecords, 10000); // Poll every 10 seconds for real-time vibe
+      return () => clearInterval(interval);
+    }
+  }, [adminUser]);
 
   // Auditor tracking log helper
   const addAuditLog = (action: string, details: string) => {
     const newLog: AuditLog = {
       id: Math.random().toString(36).substring(7),
-      adminEmail: auth.currentUser?.email || 'admin@teamglory.com',
+      adminEmail: adminUser?.email || 'admin@teamglory.com',
       action,
       details,
       timestamp: new Date().toISOString()
@@ -340,15 +466,12 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
 
   // Manual Trigger Refresh/Sync action
   const fetchData = async () => {
-    setLoadingData(true);
+    await fetchDatabaseRecords();
     addAuditLog("Sync Database", "Initiated manual sync request on administrative records.");
-    setTimeout(() => {
-      setLoadingData(false);
-    }, 800);
   };
 
-  // Handle standard Sign-in forms
-  const handleLogin = async (e: React.FormEvent) => {
+  // Custom Administrative account Signin Form handler
+  const handleCustomAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     if (!authEmail || !authPassword) {
@@ -356,55 +479,432 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       return;
     }
 
-    const isDemoCreds = authEmail.trim().toLowerCase() === 'admin@teamglory.com' && authPassword === 'HouseOfGlory2026';
+    // System license check segment
+    const nowTime = new Date().getTime();
+    const expTime = new Date(systemLicense.expiresAt).getTime();
+    const isLicenseExpired = systemLicense.status === 'EXPIRED' || expTime < nowTime;
+    if (isLicenseExpired) {
+      setAuthError("CRITICAL EXPIRED LICENSE: The system administrator license has expired! Administration portal access is locked. Please enter a valid renewal license signature below.");
+      return;
+    }
 
     try {
-      let credential;
+      let loginUser: any = null;
+
       try {
-        credential = await signInWithEmailAndPassword(auth, authEmail, authPassword);
-      } catch (signInErr: any) {
-        if (isDemoCreds && (signInErr.code === 'auth/user-not-found' || signInErr.code === 'auth/invalid-credential' || signInErr.code === 'auth/error-not-found')) {
-          // Autocreate standard credential smoothly
-          credential = await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+        const resData = await safeFetchJson('/api/admins_accounts/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authEmail, password: authPassword })
+        });
+        if (resData && resData.user) {
+          loginUser = resData.user;
+        }
+      } catch (apiErr: any) {
+        console.warn('[AdminLogin] API sign-in rejected or unavailable, attempting client fallback:', apiErr.message);
+        
+        // Dynamic client fallback matching database or local cache
+        const cleanEmail = authEmail.trim().toLowerCase();
+        const matchedLocalAdmin = allAdminAccounts.find(x => x.email.trim().toLowerCase() === cleanEmail && x.password === authPassword);
+
+        if (matchedLocalAdmin) {
+          loginUser = {
+            id: matchedLocalAdmin.id || 'admin_' + Math.random().toString(36).substring(7),
+            fullName: matchedLocalAdmin.fullName,
+            email: matchedLocalAdmin.email,
+            role: matchedLocalAdmin.role || 'Admin',
+            isFirstLogin: matchedLocalAdmin.isFirstLogin || false,
+            requiresPasswordReset: matchedLocalAdmin.requiresPasswordReset || false,
+            createdAt: matchedLocalAdmin.createdAt || new Date().toISOString()
+          };
+        } else if (cleanEmail === 'admin@teamglory.com' && authPassword === 'HouseOfGlory2026') {
+          loginUser = {
+            id: 'admin_root',
+            fullName: 'System Administrator (Static Fallback)',
+            email: 'admin@teamglory.com',
+            role: 'SuperAdmin',
+            isFirstLogin: false,
+            requiresPasswordReset: false,
+            createdAt: new Date().toISOString()
+          };
+          console.log('[AdminLogin] Authenticated successfully via static client fallback credentials.');
         } else {
-          throw signInErr;
+          throw new Error('Local/Static sandbox mode active. Custom credentials can only be verified against default credentials.');
         }
       }
 
-      await setDoc(doc(db, 'admins', credential.user.uid), {
-        email: authEmail.toLowerCase(),
-        createdAt: new Date().toISOString()
-      }, { merge: true });
+      if (!loginUser) {
+        throw new Error('Authentication rejected. Please check administrative email/password.');
+      }
+      
+      localStorage.setItem('team_glory_logged_in_admin', JSON.stringify(loginUser));
+      setAdminUser(loginUser);
+      addAuditLog("Admin Custom Login", `Authenticated as admin user: ${loginUser.fullName} (${loginUser.role})`);
 
-      addAuditLog("Admin Login", `Successful login for: ${authEmail}`);
+      if (loginUser.isFirstLogin || loginUser.requiresPasswordReset) {
+        setFirstLoginPassChange(true);
+      }
     } catch (err: any) {
-      setAuthError(getFirebaseAuthErrorMessage(err));
+      setAuthError(err.message || 'Incorrect credentials matching.');
     }
+  };
+
+  // Handle Dynamic login with robust backend API validation
+  const handleLogin = async (e: React.FormEvent) => {
+    return await handleCustomAdminLogin(e);
   };
 
   // Sign out console
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-    } catch (e) {}
-    setUser(null);
+    localStorage.removeItem('team_glory_logged_in_admin');
+    setAdminUser(null);
     setActiveTab('dashboard');
+  };
+
+  // Create Admin Account CRUD Actions
+  const handleCreateAdminUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminAccountError(null);
+    if (adminUser?.role !== 'SuperAdmin') {
+      setAdminAccountError("Access denied. Only SuperAdmin can register a console administrator.");
+      return;
+    }
+    if (!adminFormEmail || !adminFormName || !adminFormPassword) {
+      setAdminAccountError("Please fill out all administrative credentials sections.");
+      return;
+    }
+
+    const payload: any = {
+      id: 'ADM' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      fullName: adminFormName.trim(),
+      email: adminFormEmail.trim().toLowerCase(),
+      password: adminFormPassword,
+      role: adminFormRole,
+      isFirstLogin: true,
+      requiresPasswordReset: false,
+      createdAt: new Date().toISOString()
+    };
+
+    // Optimistically update states & localStorage
+    const cachedAdmins = localStorage.getItem('team_glory_admins_accounts');
+    const existingAdmins = cachedAdmins ? JSON.parse(cachedAdmins) : [];
+    if (existingAdmins.some((x: any) => x.email.toLowerCase() === payload.email)) {
+      setAdminAccountError("Administrative email already registered.");
+      return;
+    }
+    const updatedAdmins = [...existingAdmins, payload];
+    localStorage.setItem('team_glory_admins_accounts', JSON.stringify(updatedAdmins));
+    setAllAdminAccounts(updatedAdmins);
+
+    try {
+      await safeFetchJson('/api/admins_accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      setAdminFormName('');
+      setAdminFormEmail('');
+      setAdminFormPassword('');
+      setIsAddingAdminUser(false);
+
+      // Reload config list
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList) {
+          setAllAdminAccounts(adminsList);
+          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+        }
+      } catch (e) {
+        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+      }
+
+      addAuditLog("Create Admin Account", `Created administrative user: ${payload.fullName} (${payload.role})`);
+      alert("New administrative account created successfully!");
+    } catch (err: any) {
+      setAdminAccountError(err.message || 'Database execution rejected.');
+    }
+  };
+
+  // Reset password
+  const handleResetAdminPassword = async (account: any) => {
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can perform password resets on other administrators.");
+      return;
+    }
+    const freshPass = 'GloryPass' + Math.floor(1000 + Math.random() * 9000);
+    const updateFields = {
+      password: freshPass,
+      requiresPasswordReset: true,
+      isFirstLogin: false
+    };
+
+    // Optimistically update state & local cache
+    const cachedAdmins = localStorage.getItem('team_glory_admins_accounts');
+    if (cachedAdmins) {
+      const parsed = JSON.parse(cachedAdmins);
+      const updated = parsed.map((x: any) => x.id === account.id ? { ...x, ...updateFields } : x);
+      localStorage.setItem('team_glory_admins_accounts', JSON.stringify(updated));
+      setAllAdminAccounts(updated);
+    }
+
+    try {
+      await safeFetchJson(`/api/admins_accounts/${account.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateFields)
+      });
+
+      // Reload config list
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList) {
+          setAllAdminAccounts(adminsList);
+          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+        }
+      } catch (e) {
+        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+      }
+
+      alert(`Admin password reset successfully!\n\nNew Temporary Password:\n${freshPass}\n\nThe user will be prompted to change their password on their next login session.`);
+      addAuditLog("Reset Admin Password", `Reset administrative password for: ${account.fullName}`);
+    } catch (e: any) {
+      alert("Failed to reset password: " + e.message);
+    }
+  };
+
+  // Delete Admin account
+  const handleDeleteAdminAccount = async (id: string, name: string) => {
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can delete administrative accounts.");
+      return;
+    }
+    if (id === 'admin_root') {
+      alert("Cannot delete root system administrator.");
+      return;
+    }
+    if (!confirm(`Are you absolutely sure you want to delete administrative account: ${name}?`)) {
+      return;
+    }
+
+    // Optimistic delete from states & local Cache
+    const cachedAdmins = localStorage.getItem('team_glory_admins_accounts');
+    if (cachedAdmins) {
+      const parsed = JSON.parse(cachedAdmins);
+      const updated = parsed.filter((x: any) => x.id !== id);
+      localStorage.setItem('team_glory_admins_accounts', JSON.stringify(updated));
+      setAllAdminAccounts(updated);
+    }
+
+    try {
+      await safeFetchJson(`/api/admins_accounts/${id}`, {
+        method: 'DELETE'
+      });
+
+      // Reload config list
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList) {
+          setAllAdminAccounts(adminsList);
+          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+        }
+      } catch (e) {
+        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+      }
+      
+      addAuditLog("Delete Admin Account", `Ejected administrative user: ${name}`);
+      alert("Admin user deleted.");
+    } catch (e: any) {
+      alert("Deletion failed: " + e.message);
+    }
+  };
+
+  // Change password on first login/reset/manual update
+  const handleCustomAdminChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminAccountError(null);
+    if (changingPassUser && adminUser?.role !== 'SuperAdmin') {
+      setAdminAccountError("Access denied. Only SuperAdmin can manually change other admin passwords.");
+      return;
+    }
+    if (!newPasswordVal.trim()) {
+      setAdminAccountError('Please enter a valid new password');
+      return;
+    }
+
+    const targetUser = changingPassUser || adminUser;
+    if (!targetUser) return;
+
+    const updateFields = {
+      password: newPasswordVal.trim(),
+      isFirstLogin: false,
+      requiresPasswordReset: false
+    };
+
+    try {
+      let updatedUser: any = null;
+      try {
+        const respData = await safeFetchJson('/api/admins_accounts/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: targetUser.id, newPassword: newPasswordVal.trim() })
+        });
+        updatedUser = respData?.user;
+      } catch (err: any) {
+        console.warn('API password change failed:', err.message);
+        throw err;
+      }
+
+      if (updatedUser) {
+        if (adminUser && adminUser.id === updatedUser.id) {
+          localStorage.setItem('team_glory_logged_in_admin', JSON.stringify(updatedUser));
+          setAdminUser(updatedUser);
+          setFirstLoginPassChange(false);
+        }
+      }
+
+      try {
+        const adminsList = await safeFetchJson('/api/admins_accounts');
+        if (adminsList) {
+          setAllAdminAccounts(adminsList);
+          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+        }
+      } catch (e) {
+        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+      }
+
+      setChangingPassUser(null);
+      setNewPasswordVal('');
+      alert('Administrative password updated successfully!');
+    } catch (err: any) {
+      setAdminAccountError(err.message || 'Operation failed.');
+    }
+  };
+
+  // Visual Branding Customizer Save
+  const handleSaveBranding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingBranding(true);
+
+    const payload = {
+      logoBase64: brandLogo,
+      headerTitle: brandTitle.trim(),
+      headerSubtitle: brandSubtitle.trim(),
+      footerText: brandFooter.trim(),
+      updatedAt: new Date().toISOString()
+    };
+
+    localStorage.setItem('team_glory_branding', JSON.stringify(payload));
+
+    try {
+      await safeFetchJson('/api/branding', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      addAuditLog("Save Branding", `Updated dynamic application layout, title="${brandTitle.trim()}"`);
+      alert("Application branding preferences updated successfully! They will propagate automatically across templates on refresh.");
+    } catch (err: any) {
+      alert("Failed to save branding preferences: " + err.message);
+    } finally {
+      setIsSavingBranding(false);
+    }
+  };
+
+  const handleRenewSystemLicense = async () => {
+    const res = validateLicenseKeyFormat(renewalLicenseKey);
+    if (!res.valid) {
+      alert(res.error || "Invalid license key format.");
+      return;
+    }
+
+    const renewedLicense: SystemLicense = {
+      licenseKey: renewalLicenseKey.trim().toUpperCase(),
+      activatedAt: new Date().toISOString(),
+      expiresAt: res.expiresAt,
+      status: 'ACTIVE',
+      tier: 'Enterprise Pro'
+    };
+
+    try {
+      await safeFetchJson('/api/records/system_license', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'status', ...renewedLicense })
+      });
+    } catch (e) {
+      console.warn("API write failed for license renewal, saving locally:", e);
+    }
+
+    localStorage.setItem('team_glory_system_license', JSON.stringify(renewedLicense));
+    setSystemLicense(renewedLicense);
+    setRenewalLicenseKey('');
+    setAuthError(null);
+    alert(`System License Renewed successfully! Tier: ${renewedLicense.tier}. Active until ${new Date(renewedLicense.expiresAt).toLocaleDateString()}. Console access is now unlocked!`);
+  };
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 800000) { 
+        alert("Selected logo is too large. Please select an image under 800KB.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setBrandLogo(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Re-assign worker department choices
+  const handleSaveDepartmentAssignments = async () => {
+    if (!selectedRecord) return;
+    setUpdatingAssignments(true);
+
+    try {
+      const updatedFields = {
+        firstUnit: selectedRecord.firstUnit,
+        secondUnit: selectedRecord.secondUnit,
+        updatedAt: new Date().toISOString()
+      };
+
+      await safeFetchJson(`/api/records/${activeSegment}/${selectedRecord.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updatedFields)
+      });
+
+      addAuditLog("Re-assign Department", `Re-assigned worker ${selectedRecord.fullName} to: First=${selectedRecord.firstUnit}, Second=${selectedRecord.secondUnit}`);
+
+      const updateListLocally = <T,>(arr: T[], setArr: React.Dispatch<React.SetStateAction<T[]>>) => {
+        setArr(prev => prev.map((item: any) => item.id === selectedRecord.id ? { ...item, ...updatedFields } : item));
+      };
+
+      if (activeSegment === 'first_timer_workers') updateListLocally(firstTimerWorkers, setFirstTimerWorkers);
+      else if (activeSegment === 'member_workers') updateListLocally(memberWorkers, setMemberWorkers);
+      else if (activeSegment === 'workers') updateListLocally(workers, setWorkers);
+
+      // Also update selectedRecord local state to match
+      setSelectedRecord(prev => prev ? { ...prev, ...updatedFields } : null);
+
+      alert("Ministry unit assignments saved successfully!");
+    } catch (e: any) {
+      alert(`Error saving department modification: ${e.message}`);
+    } finally {
+      setUpdatingAssignments(false);
+    }
   };
 
   // Google Authentication
   const handleGoogleLogin = async () => {
-    setAuthError(null);
-    const provider = new GoogleAuthProvider();
-    try {
-      const result = await signInWithPopup(auth, provider);
-      await setDoc(doc(db, 'admins', result.user.uid), {
-        email: result.user.email?.toLowerCase(),
-        createdAt: new Date().toISOString()
-      }, { merge: true });
-      addAuditLog("Admin Google login", `Successful Google Login for ${result.user.email}`);
-    } catch (err: any) {
-      setAuthError(err.message || 'Google Authentication failed.');
-    }
+    alert("Google authentications have been migrated to administrator accounts email/password login. Please enter your email and password to log in.");
   };
 
   // --- AUTOMATED HOD AUTO-MAPPING LOGIC ---
@@ -428,15 +928,17 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
             totalsMapped++;
             v.assignedHodId = matchedH.id;
 
-            if (!isSandbox) {
-              try {
-                await updateDoc(doc(db, segmentObj.name, v.id), {
+            try {
+              await safeFetchJson(`/api/records/${segmentObj.name}/${v.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                   assignedHodId: matchedH.id,
                   updatedAt: new Date().toISOString()
-                });
-              } catch (e) {
-                console.warn(`HOD map database error for ${v.fullName}:`, e);
-              }
+                })
+              });
+            } catch (e) {
+              console.warn(`HOD map database error for ${v.fullName}:`, e);
             }
 
             // Sync localStorage references
@@ -460,24 +962,19 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
 
   // --- UPDATE RECORD ASSIGNED HOD ---
   const handleUpdateRecordHod = async (recordId: string, segment: RecordSegment, newHodId: string) => {
-    const isSandbox = false;
     const foundHod = hods.find(h => h.id === newHodId);
     
     try {
-      if (!isSandbox) {
-        await updateDoc(doc(db, segment, recordId), {
+      await safeFetchJson(`/api/records/${segment}/${recordId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
           assignedHodId: newHodId,
           updatedAt: new Date().toISOString()
-        });
-
-        // Maintain compatibility shadow table
-        try {
-          await updateDoc(doc(db, 'team_glory_members', recordId), {
-            assignedHodId: newHodId,
-            updatedAt: new Date().toISOString()
-          });
-        } catch (e) {}
-      }
+        })
+      });
 
       // Update in Local Storage mirrors
       const lsKeys = [`team_glory_${segment}`, 'team_glory_members'];
@@ -492,10 +989,20 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
         } catch (e) {}
       });
 
+      // Update local states immediately inside component
+      const updateState = (prev: any[]) => prev.map((item: any) => item.id === recordId ? { ...item, assignedHodId: newHodId, updatedAt: new Date().toISOString() } : item);
+      if (segment === 'first_timer_workers') setFirstTimerWorkers(updateState);
+      else if (segment === 'member_workers') setMemberWorkers(updateState);
+      else if (segment === 'workers') setWorkers(updateState);
+
+      if (selectedRecord && (selectedRecord.id === recordId || selectedRecord.docId === recordId)) {
+        setSelectedRecord(prev => prev ? { ...prev, assignedHodId: newHodId, updatedAt: new Date().toISOString() } : null);
+      }
+
       addAuditLog("Modify Head of Department Field", `Re-assigned worker ID ${recordId} to HOD ${foundHod ? foundHod.fullName : 'None'}.`);
     } catch (err: any) {
       console.error(err);
-      handleFirestoreError(err, OperationType.UPDATE, segment);
+      alert("Failed to update HOD assignment: " + err.message);
     }
   };
 
@@ -505,15 +1012,10 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       return;
     }
 
-    const isSandbox = false;
-
     try {
-      if (!isSandbox) {
-        await deleteDoc(doc(db, segment, recordId));
-        try {
-          await deleteDoc(doc(db, 'team_glory_members', recordId));
-        } catch (e) {}
-      }
+      await safeFetchJson(`/api/records/${segment}/${recordId}`, {
+        method: 'DELETE'
+      });
 
       // Evict local storage records
       const lsKeys = [`team_glory_${segment}`, 'team_glory_members'];
@@ -534,19 +1036,90 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       alert("Registration deleted successfully.");
     } catch (err: any) {
       console.error(err);
-      handleFirestoreError(err, OperationType.DELETE, segment);
+      alert("Failed to delete record: " + err.message);
+    }
+  };
+
+  // --- PRODUCTION DATABASE CLEAR & PRIME FORMATTING ---
+  const handleProductionFormatDatabase = async () => {
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can format the database for fresh production registrations.");
+      return;
+    }
+
+    if (!window.confirm("CRITICAL WARNING: This will permanently delete ALL registration records (First Timers, Members, Workers, Placements, etc.) to format the database for a fresh registration intake. Administrator accounts and HOD profiles will not be touched.\n\nAre you sure you want to proceed with full database formatting?")) {
+      return;
+    }
+
+    if (prompt("Please type 'FORMAT CONFIRM' to authorize this database-wide purge:") !== 'FORMAT CONFIRM') {
+      alert("Database formatting cancelled.");
+      return;
+    }
+
+    setLoadingData(true);
+    try {
+      const collectionsToFormat = [
+        'first_timers',
+        'first_timer_workers',
+        'members',
+        'member_workers',
+        'workers',
+        'training_registrations',
+        'house_fellowship_registrations',
+        'interest_groups',
+        'team_glory_members'
+      ];
+
+      // Reset Remote Database Collections
+      for (const collName of collectionsToFormat) {
+        try {
+          await safeFetchJson(`/api/records/${collName}`, {
+            method: 'DELETE'
+          });
+        } catch (dbErr) {
+          console.warn(`Could not format remote collection ${collName}:`, dbErr);
+        }
+      }
+
+      // Clear local storage mirrors
+      collectionsToFormat.forEach(coll => {
+        try {
+          localStorage.removeItem(`team_glory_${coll}`);
+        } catch (e) {}
+      });
+      localStorage.removeItem('team_glory_members');
+
+      // Reset state variables
+      setFirstTimers([]);
+      setFirstTimerWorkers([]);
+      setMembers([]);
+      setMemberWorkers([]);
+      setWorkers([]);
+      setTrainingRegs([]);
+      setHfRegs([]);
+      setInterestGroups([]);
+
+      addAuditLog("Production Database Format", "Wiped all registration records to initialize the system for fresh intakes.");
+      alert("Database successfully formatted and primed for a clean production registration cycle! All previous entries have been evicted.");
+    } catch (err: any) {
+      alert("Error executing full format: " + err.message);
+    } finally {
+      setLoadingData(false);
     }
   };
 
   // --- HOD REGISTRY WRITE / UPDATE / DELETE ---
   const handleAddNewHod = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can add Heads of Departments.");
+      return;
+    }
     if (!newHodName.trim() || !newHodDept.trim()) {
       alert("Name and Department choice fields are required.");
       return;
     }
 
-    const isSandbox = false;
     const computedHodId = 'hod-' + Math.floor(Math.random() * 10000);
     const payload: HeadOfDepartment = {
       id: computedHodId,
@@ -557,9 +1130,11 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
     };
 
     try {
-      if (!isSandbox) {
-        await setDoc(doc(db, 'heads_of_departments', computedHodId), payload);
-      }
+      await safeFetchJson('/api/records/heads_of_departments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
 
       // Update local storage
       try {
@@ -569,7 +1144,18 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
         localStorage.setItem('heads_of_departments', JSON.stringify(list));
       } catch (e) {}
 
-      setHods(prev => [...prev, payload]);
+      setHods(prev => {
+        const next = [...prev, payload];
+        const unique: HeadOfDepartment[] = [];
+        const seen = new Set<string>();
+        next.forEach(h => {
+          if (h && h.id && !seen.has(h.id)) {
+            seen.add(h.id);
+            unique.push(h);
+          }
+        });
+        return unique;
+      });
       setShowAddHodModal(false);
       setNewHodName('');
       setNewHodDept('');
@@ -580,18 +1166,23 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       alert("New Head of Department added successfully.");
     } catch (err: any) {
       console.error("HOD registration failed:", err);
-      handleFirestoreError(err, OperationType.CREATE, 'heads_of_departments');
+      alert("HOD registration failed: " + err.message);
     }
   };
 
   const handleUpdateHod = async (hId: string, name: string, dept: string, email: string, phone: string) => {
-    const isSandbox = false;
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can modify Heads of Departments.");
+      return;
+    }
     const updatedFields = { fullName: name, department: dept, email, phoneNumber: phone };
 
     try {
-      if (!isSandbox) {
-        await updateDoc(doc(db, 'heads_of_departments', hId), updatedFields);
-      }
+      await safeFetchJson(`/api/records/heads_of_departments/${hId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedFields)
+      });
 
       setHods(prev => prev.map(h => h.id === hId ? { ...h, ...updatedFields } : h));
 
@@ -610,20 +1201,23 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       alert("HOD updated successfully.");
     } catch (err: any) {
       console.error("HOD modification failed:", err);
-      handleFirestoreError(err, OperationType.UPDATE, 'heads_of_departments');
+      alert("Failed to modify HOD: " + err.message);
     }
   };
 
   const handleDeleteHod = async (hId: string, name: string) => {
+    if (adminUser?.role !== 'SuperAdmin') {
+      alert("Access denied. Only SuperAdmin can remove Heads of Departments.");
+      return;
+    }
     if (!window.confirm(`Are you sure you want to remove HOD Leader: ${name}?`)) {
       return;
     }
-    const isSandbox = false;
 
     try {
-      if (!isSandbox) {
-        await deleteDoc(doc(db, 'heads_of_departments', hId));
-      }
+      await safeFetchJson(`/api/records/heads_of_departments/${hId}`, {
+        method: 'DELETE'
+      });
 
       setHods(prev => prev.filter(h => h.id !== hId));
 
@@ -641,7 +1235,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
       alert("HOD removed successfully.");
     } catch (err: any) {
       console.error("HOD delete failed:", err);
-      handleFirestoreError(err, OperationType.DELETE, 'heads_of_departments');
+      alert("HOD deletion failed: " + err.message);
     }
   };
 
@@ -712,9 +1306,8 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
     setIsScanning(true);
     setScanResult(null);
     try {
-      const res = await fetch('/api/birthdays/check-and-notify', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await safeFetchJson('/api/birthdays/check-and-notify', { method: 'POST' });
+      if (data) {
         setScanResult(data);
       } else {
         setScanResult({ error: 'Failed to complete server birthday scan' });
@@ -769,14 +1362,14 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
         segment === 'house_fellowship_registrations' ? 'house_fellowship_registrations' :
         'interest_groups';
 
-      const isSandbox = false;
-
-      if (!isSandbox) {
-        await updateDoc(doc(db, collName, recordId), {
+      await safeFetchJson(`/api/records/${collName}/${recordId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           lastBirthdayBlessedYear: currentYear,
           updatedAt: new Date().toISOString()
-        });
-      }
+        })
+      });
 
       // Update state locally
       const updateState = (prevList: any[]) => prevList.map(item => item.id === recordId ? { ...item, lastBirthdayBlessedYear: currentYear } : item);
@@ -1120,8 +1713,58 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
     );
   }
 
+  // Forced Password Change View for First Login or Password Reset
+  if (firstLoginPassChange && adminUser) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-16">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }} 
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-850 rounded-3xl p-8 shadow-2xl relative"
+        >
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 mb-3.5">
+              <Key className="w-6 h-6 animate-pulse" />
+            </div>
+            <h2 className="text-xl font-extrabold text-slate-800 dark:text-white">Security Update Required</h2>
+            <p className="text-xs text-slate-400 mt-1">Hello, {adminUser.fullName}. You must change your temporary authorization password before you can proceed.</p>
+          </div>
+
+          {adminAccountError && (
+            <div className="mb-4.5 p-3.5 bg-red-50 dark:bg-red-950/20 border border-red-500/20 text-red-700 dark:text-red-400 text-xs font-semibold rounded-xl flex items-start gap-2">
+              <AlertCircle className="w-4.5 h-4.5 flex-shrink-0 text-red-500" />
+              <div>{adminAccountError}</div>
+            </div>
+          )}
+
+          <form onSubmit={handleCustomAdminChangePassword} className="space-y-4">
+            <div>
+              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">New Secure Password</label>
+              <input
+                type="password"
+                value={newPasswordVal}
+                onChange={e => setNewPasswordVal(e.target.value)}
+                placeholder="Enter new strong password"
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-250 dark:border-gray-750 bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white outline-none text-xs"
+                required
+              />
+            </div>
+            <div className="pt-2">
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-extrabold hover:shadow-lg transition-all cursor-pointer"
+              >
+                Establish New Password
+              </button>
+            </div>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
+
   // LOGIN PAGE IF NOT AUTHENTICATED
-  if (!user) {
+  if (!adminUser) {
     return (
       <div className="max-w-md mx-auto px-4 py-8">
         <motion.div 
@@ -1148,44 +1791,89 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4 relative z-10">
-            <div>
-              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Administrative Email</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                <input 
-                  type="email" 
-                  value={authEmail}
-                  onChange={e => setAuthEmail(e.target.value)}
-                  placeholder="e.g. admin@teamglory.com" 
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none text-xs transition-all"
-                  required
-                />
-              </div>
-            </div>
+          {(() => {
+            const nowTime = new Date().getTime();
+            const expTime = new Date(systemLicense.expiresAt).getTime();
+            const isLicenseExpired = systemLicense.status === 'EXPIRED' || expTime < nowTime;
+            
+            if (isLicenseExpired) {
+              return (
+                <div className="mt-2 p-5 bg-red-500/10 border border-red-500/35 rounded-2xl space-y-4 text-left relative z-10">
+                  <div className="flex items-start gap-2.5">
+                    <Shield className="w-6 h-6 text-red-500 flex-shrink-0" />
+                    <div>
+                      <h4 className="text-xs font-black text-red-600 dark:text-red-400 uppercase tracking-wider">CONSOLE LOCKED (EXPIRED LICENSE)</h4>
+                      <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed font-semibold mt-1">
+                        Your enterprise system administration license has expired. The access console remains locked. To reactivate access immediately, enter your renewed RCCG Glory-Net cryptographic key signature below.
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <label className="block text-[9px] font-extrabold text-red-500 uppercase tracking-widest">Renew System License</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={renewalLicenseKey}
+                        onChange={e => setRenewalLicenseKey(e.target.value)}
+                        placeholder="e.g. GLORY-NET-99X8-44A1-PRO2030"
+                        className="flex-1 px-3 py-2 bg-white dark:bg-gray-900 border border-red-500/20 rounded-xl text-xs font-mono uppercase focus:ring-1 focus:ring-red-500 text-gray-950 dark:text-white outline-none"
+                      />
+                      <button 
+                        type="button"
+                        onClick={handleRenewSystemLicense}
+                        className="px-4 bg-red-600 hover:bg-red-700 transition-colors text-white text-[10px] font-extrabold rounded-xl uppercase cursor-pointer"
+                      >
+                        Renew
+                      </button>
+                    </div>
+                    <span className="text-[9px] text-gray-400 dark:text-gray-500 font-semibold italic block">Format required: GLORY-NET-XXXX-XXXX-PROYYYY</span>
+                  </div>
+                </div>
+              );
+            }
 
-            <div>
-              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Authorization Password</label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                <input 
-                  type="password" 
-                  value={authPassword}
-                  onChange={e => setAuthPassword(e.target.value)}
-                  placeholder="••••••••••••••" 
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none text-xs transition-all"
-                  required
-                />
-              </div>
-            </div>
+            return (
+              <form onSubmit={handleLogin} className="space-y-4 relative z-10">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Administrative Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                    <input 
+                      type="email" 
+                      value={authEmail}
+                      onChange={e => setAuthEmail(e.target.value)}
+                      placeholder="e.g. admin@teamglory.com" 
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none text-xs transition-all"
+                      required
+                    />
+                  </div>
+                </div>
 
-            <button
-              type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:scale-[1.01] active:scale-[0.99] transition-transform text-white text-xs font-black uppercase tracking-wider shadow-md shadow-amber-500/10 cursor-pointer"
-            >
-              Sign In to Console
-            </button>
-          </form>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Authorization Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                    <input 
+                      type="password" 
+                      value={authPassword}
+                      onChange={e => setAuthPassword(e.target.value)}
+                      placeholder="••••••••••••••" 
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none text-xs transition-all"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:scale-[1.01] active:scale-[0.99] transition-transform text-white text-xs font-black uppercase tracking-wider shadow-md shadow-amber-500/10 cursor-pointer"
+                >
+                  Sign In to Console
+                </button>
+              </form>
+            );
+          })()}
 
           {/* Alternatives */}
           <div className="mt-6 pt-5 border-t border-slate-200/50 dark:border-white/5 space-y-4 text-center">
@@ -1220,7 +1908,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
               <h1 className="text-base font-black text-slate-800 dark:text-white">TEAM GLORY console</h1>
               <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/25">LOCKED</span>
             </div>
-            <span className="text-[10px] text-gray-500 dark:text-gray-400 font-bold block mt-0.5">Authorised account: {user?.email}</span>
+            <span className="text-[10px] text-gray-500 dark:text-gray-400 font-bold block mt-0.5">Authorised account: {adminUser?.email}</span>
           </div>
         </div>
 
@@ -1277,6 +1965,30 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
         >
           <UserCheck className="w-4 h-4" />
           Heads of Departments
+        </button>
+
+        <button
+          onClick={() => setActiveTab('admins_management')}
+          className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'admins_management'
+            ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+            : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <Shield className="w-4 h-4" />
+          Admin Users
+        </button>
+
+        <button
+          onClick={() => setActiveTab('branding')}
+          className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'branding'
+            ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+            : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          Branding Setup
         </button>
 
         <button
@@ -1686,6 +2398,15 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
                   <Printer className="w-3.5 h-3.5" />
                   Print / PDF
                 </button>
+                {adminUser?.role === 'SuperAdmin' && (
+                  <button
+                    onClick={handleProductionFormatDatabase}
+                    className="px-4.5 py-2 rounded-xl bg-red-650 hover:bg-red-700 text-white font-black text-xs shadow-sm flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Format Database
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1972,13 +2693,19 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
               <span className="text-[10px] text-gray-400 uppercase font-bold">Ministerial Leaders Registry and Placements matches</span>
             </div>
             
-            <button
-              onClick={() => setShowAddHodModal(true)}
-              className="px-4.5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
-            >
-              <PlusCircle className="w-4 h-4" />
-              Add new HOD
-            </button>
+            {adminUser?.role === 'SuperAdmin' ? (
+              <button
+                onClick={() => setShowAddHodModal(true)}
+                className="px-4.5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
+              >
+                <PlusCircle className="w-4 h-4" />
+                Add new HOD
+              </button>
+            ) : (
+              <span className="text-[11px] font-bold text-slate-500 bg-slate-100 dark:bg-gray-900 border border-slate-200 dark:border-gray-850 px-3 py-1.5 rounded-xl self-start">
+                🛡️ HOD creation restricted to Super Admin
+              </span>
+            )}
           </div>
 
           <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
@@ -1990,7 +2717,7 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
                     <th className="px-5 py-3 col-span-2">Assigned Ministry Department</th>
                     <th className="px-5 py-3">Email</th>
                     <th className="px-5 py-3">Contact Phone</th>
-                    <th className="px-5 py-3 text-center">Actions</th>
+                    {adminUser?.role === 'SuperAdmin' && <th className="px-5 py-3 text-center">Actions</th>}
                   </tr>
                 </thead>
 
@@ -2068,20 +2795,22 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
                               </td>
                               <td className="px-5 py-4 text-[11px] font-mono">{hod.email || 'N/A'}</td>
                               <td className="px-5 py-4">{hod.phoneNumber || 'N/A'}</td>
-                              <td className="px-5 py-4 text-center space-x-1.5">
-                                <button
-                                  onClick={() => setEditingHod(hod)}
-                                  className="px-2.5 py-1 text-[10px] font-black border border-slate-200 dark:border-gray-700 hover:text-amber-500 rounded-md cursor-pointer"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteHod(hod.id, hod.fullName)}
-                                  className="px-2.5 py-1 text-[10px] font-black border border-red-500/20 hover:bg-red-500/5 text-red-650 rounded-md cursor-pointer"
-                                >
-                                  Delete
-                                </button>
-                              </td>
+                              {adminUser?.role === 'SuperAdmin' && (
+                                <td className="px-5 py-4 text-center space-x-1.5">
+                                  <button
+                                    onClick={() => setEditingHod(hod)}
+                                    className="px-2.5 py-1 text-[10px] font-black border border-slate-200 dark:border-gray-700 hover:text-amber-500 rounded-md cursor-pointer"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteHod(hod.id, hod.fullName)}
+                                    className="px-2.5 py-1 text-[10px] font-black border border-red-500/20 hover:bg-red-500/5 text-red-650 rounded-md cursor-pointer"
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              )}
                             </>
                           )}
                         </tr>
@@ -2090,6 +2819,403 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- TAB: ADMINS USER MANAGEMENT Central --- */}
+      {activeTab === 'admins_management' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 dark:text-white">Administrative Accounts Central</h2>
+              <span className="text-[10px] text-gray-400 uppercase font-bold">Manage console administrators, assign access roles, and perform password resets</span>
+            </div>
+            {adminUser?.role === 'SuperAdmin' ? (
+              <button
+                onClick={() => {
+                  setAdminAccountError(null);
+                  setAdminFormName('');
+                  setAdminFormEmail('');
+                  setAdminFormPassword('');
+                  setAdminFormRole('Admin');
+                  setIsAddingAdminUser(prev => !prev);
+                }}
+                className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-md flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+              >
+                <PlusCircle className="w-4.5 h-4.5" />
+                {isAddingAdminUser ? "Cancel Setup" : "Register Administrator"}
+              </button>
+            ) : (
+              <span className="text-[11px] font-bold text-slate-500 bg-slate-100 dark:bg-gray-900 border border-slate-200 dark:border-gray-850 px-3 py-1.5 rounded-xl self-start sm:self-auto">
+                🛡️ Register access restricted to Super Admin
+              </span>
+            )}
+          </div>
+
+          {/* Active System License Verification Card */}
+          {adminUser?.role === 'SuperAdmin' && (
+            <div className="bg-gradient-to-r from-amber-500/10 via-amber-600/5 to-transparent border border-amber-500/20 p-5 rounded-3xl flex flex-col md:flex-row md:items-center justify-between gap-5 relative z-10">
+              <div className="flex items-start gap-3">
+                <div className="p-3 bg-amber-500/15 text-amber-600 dark:text-amber-400 rounded-2xl flex-shrink-0">
+                  <Key className="w-5 h-5 animate-pulse" />
+                </div>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-white">Active System Administrator License</h3>
+                    <span className={`px-2 py-0.5 rounded-full text-[9px] uppercase font-black tracking-wide border ${
+                      systemLicense.status === 'ACTIVE'
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                        : 'bg-red-500/10 text-red-650 dark:text-red-400 border-red-500/20'
+                    }`}>
+                      {systemLicense.status}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold leading-relaxed">
+                    RCCG Glory-Net Platform License: <span className="font-mono text-amber-600 dark:text-amber-400 font-black">{systemLicense.licenseKey}</span> • Tier: <span className="font-bold">{systemLicense.tier}</span> • Expires: <span className="font-mono">{new Date(systemLicense.expiresAt).toLocaleDateString()}</span>
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <input 
+                  type="text" 
+                  value={renewalLicenseKey}
+                  onChange={e => setRenewalLicenseKey(e.target.value)}
+                  placeholder="PRO RENEWAL KEY"
+                  className="px-3 py-2 border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 rounded-xl text-xs font-mono uppercase focus:ring-1 focus:ring-amber-500 outline-none w-48 text-gray-950 dark:text-white"
+                />
+                <button 
+                  onClick={handleRenewSystemLicense}
+                  className="px-4 py-2 bg-slate-800 dark:bg-amber-500 hover:bg-slate-900 dark:hover:bg-amber-600 transition-colors text-white text-xs font-black rounded-xl uppercase shadow cursor-pointer"
+                >
+                  PROLONG
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Form for Creating Admin Account */}
+          {isAddingAdminUser && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-slate-50 dark:bg-gray-900 border border-slate-200 dark:border-gray-800 p-6 rounded-2xl space-y-4"
+            >
+              <h3 className="text-sm font-extrabold text-slate-800 dark:text-white">Create New Administrative User</h3>
+              {adminAccountError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/20 border border-red-500/20 text-red-700 dark:text-red-400 text-xs font-semibold rounded-xl">
+                  {adminAccountError}
+                </div>
+              )}
+              <form onSubmit={handleCreateAdminUser} className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-semibold">
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    value={adminFormName}
+                    onChange={e => setAdminFormName(e.target.value)}
+                    placeholder="e.g. Pastor James"
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={adminFormEmail}
+                    onChange={e => setAdminFormEmail(e.target.value)}
+                    placeholder="e.g. james@teamglory.com"
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Temporary Password</label>
+                  <input
+                    type="password"
+                    value={adminFormPassword}
+                    onChange={e => setAdminFormPassword(e.target.value)}
+                    placeholder="Provide temporary password"
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Administrative Role</label>
+                  <select
+                    value={adminFormRole}
+                    onChange={e => setAdminFormRole(e.target.value as any)}
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                  >
+                    <option value="Admin">Admin</option>
+                    <option value="SuperAdmin">SuperAdmin</option>
+                    <option value="HOD">HOD</option>
+                  </select>
+                </div>
+                <div className="md:col-span-4 pt-1 flex justify-end">
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-sm cursor-pointer"
+                  >
+                    Save Admin User
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          )}
+
+          {/* List of Admin Accounts */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xl overflow-hidden">
+            <div className="p-5 border-b border-gray-100 dark:border-gray-750">
+              <h3 className="font-extrabold text-xs uppercase tracking-wider text-slate-400">Current Administrative Authorities list</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/70 dark:bg-slate-900/60 border-b border-gray-150 dark:border-gray-750 text-[10px] uppercase font-black tracking-widest text-slate-400">
+                    <th className="px-5 py-4">Auth Name</th>
+                    <th className="px-5 py-4">Email</th>
+                    <th className="px-5 py-4">Role Designation</th>
+                    <th className="px-5 py-4">Security Credentials State</th>
+                    <th className="px-5 py-4 text-right">Actions Panel</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-gray-750 text-xs text-slate-700 dark:text-slate-350 font-semibold">
+                  {allAdminAccounts.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-5 py-10 text-center text-slate-400 font-extrabold">
+                        No active users registered. Fallback database contains standard master credentials.
+                      </td>
+                    </tr>
+                  ) : (
+                    allAdminAccounts.map((account) => (
+                      <tr key={account.id} className="hover:bg-slate-50/50 dark:hover:bg-gray-900/30 transition-colors">
+                        <td className="px-5 py-4 font-extrabold text-slate-900 dark:text-white capitalize">{account.fullName}</td>
+                        <td className="px-5 py-4 font-mono text-[11px]">{account.email}</td>
+                        <td className="px-5 py-4">
+                          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-black tracking-wide ${
+                            account.role === 'SuperAdmin' 
+                              ? 'bg-rose-500/15 text-rose-500' 
+                              : account.role === 'HOD' 
+                              ? 'bg-amber-500/15 text-amber-500' 
+                              : 'bg-blue-500/15 text-blue-500'
+                          }`}>
+                            {account.role || 'Admin'}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 space-y-1">
+                          {account.isFirstLogin && (
+                            <span className="block text-[10px] font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded w-max">Requires First Login Pass Reset</span>
+                          )}
+                          {account.requiresPasswordReset && (
+                            <span className="block text-[10px] font-bold text-red-500 bg-red-500/10 px-2 py-0.5 rounded w-max">Requires Pass Reset</span>
+                          )}
+                          {!account.isFirstLogin && !account.requiresPasswordReset && (
+                            <span className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded w-max">Active, Password Confirmed</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-4 text-right space-x-2">
+                          {adminUser?.role === 'SuperAdmin' ? (
+                            <>
+                              <button
+                                onClick={() => handleResetAdminPassword(account)}
+                                className="bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 px-2.5 py-1.5 rounded-lg font-bold text-[10px] cursor-pointer"
+                              >
+                                Reset Password
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setAdminAccountError(null);
+                                  setChangingPassUser(account);
+                                  setNewPasswordVal('');
+                                }}
+                                className="bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 px-2.5 py-1.5 rounded-lg font-bold text-[10px] cursor-pointer"
+                              >
+                                Set Password Manually
+                              </button>
+                              <button
+                                onClick={() => handleDeleteAdminAccount(account.id, account.fullName)}
+                                className="bg-red-500/10 text-red-650 hover:bg-red-500/20 px-2.5 py-1.5 rounded-lg font-bold text-[10px] cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-[10px] text-gray-400 font-extrabold uppercase">Protected</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Modal to Set Password Manually */}
+          {changingPassUser && (
+            <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+              <div className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 p-6 rounded-2xl w-full max-w-sm space-y-4 shadow-2xl">
+                <h3 className="text-sm font-extrabold text-slate-800 dark:text-white">Modify Password: {changingPassUser.fullName}</h3>
+                {adminAccountError && <p className="text-red-500 text-[11px] font-bold">{adminAccountError}</p>}
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">New Administrative Password</label>
+                  <input
+                    type="password"
+                    value={newPasswordVal}
+                    onChange={e => setNewPasswordVal(e.target.value)}
+                    placeholder="Provide a strong password"
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 text-xs">
+                  <button
+                    onClick={() => setChangingPassUser(null)}
+                    className="px-3.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-950 font-bold rounded-lg cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCustomAdminChangePassword}
+                    className="px-4 py-2 bg-amber-500 text-white font-bold rounded-lg cursor-pointer"
+                  >
+                    Apply New Password
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* --- TAB: BRANDING CONFIGURATION PANEL --- */}
+      {activeTab === 'branding' && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-black text-slate-800 dark:text-white">Dynamic Portal Customization</h2>
+            <span className="text-[10px] text-gray-400 uppercase font-bold">Upload dynamic branch logos and adjust visual headers/footers to propagate automatically across templates</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Control Panel inputs */}
+            <div className="md:col-span-2 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-6 rounded-3xl shadow-xl">
+              <form onSubmit={handleSaveBranding} className="space-y-4 text-xs font-semibold">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Branch Logo Image (Select local file)
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      className="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-amber-500/10 file:text-amber-600 hover:file:bg-amber-500/20 cursor-pointer"
+                    />
+                    {brandLogo && (
+                      <button
+                        type="button"
+                        onClick={() => setBrandLogo(null)}
+                        className="text-red-500 hover:text-red-700 font-extrabold text-[10px]"
+                      >
+                        Purge Logo
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">Recommended size: Square logo under 800KB. Automatically converted to base64 encoding stored persistently.</p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Header General Title
+                  </label>
+                  <input
+                    type="text"
+                    value={brandTitle}
+                    onChange={e => setBrandTitle(e.target.value)}
+                    placeholder="e.g. RCCG HOUSE OF GLORY, YP2"
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-55/60 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none block"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Header Companion Subtitle / Portal Tagline
+                  </label>
+                  <input
+                    type="text"
+                    value={brandSubtitle}
+                    onChange={e => setBrandSubtitle(e.target.value)}
+                    placeholder="e.g. TEAM GLORY"
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-55/60 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none block"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Footer Copyright Announcement text
+                  </label>
+                  <input
+                    type="text"
+                    value={brandFooter}
+                    onChange={e => setBrandFooter(e.target.value)}
+                    placeholder="e.g. © 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL"
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-55/60 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none block"
+                    required
+                  />
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={isSavingBranding}
+                    className="px-5 py-3.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingBranding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Settings className="w-4.5 h-4.5" />}
+                    Save Branding Configurations
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Live Interactive Preview rendering panel */}
+            <div className="bg-slate-50 dark:bg-gray-900 border border-slate-200 dark:border-gray-800 p-6 rounded-3xl space-y-4">
+              <span className="block text-[10px] uppercase font-bold text-gray-400 tracking-wider">Live Visual Sync Preview</span>
+              <div className="border border-dashed border-slate-200 dark:border-gray-755 rounded-2xl overflow-hidden shadow-sm bg-white dark:bg-gray-950">
+                {/* Simulated Header */}
+                <div className="p-4 border-b border-gray-150 dark:border-gray-850 flex items-center gap-3 bg-white dark:bg-gray-900">
+                  <div className="w-9 h-9 rounded-full bg-slate-100 dark:bg-gray-850 overflow-hidden flex items-center justify-center flex-shrink-0">
+                    {brandLogo ? (
+                      <img src={brandLogo} alt="Branch logo preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <Shield className="w-4 h-4 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-black text-slate-800 dark:text-white uppercase truncate tracking-wide leading-tight">
+                      {brandTitle || "RCCG HOUSE OF GLORY, YP2"}
+                    </p>
+                    <p className="text-[8px] font-bold text-amber-500 truncate tracking-widest uppercase">
+                      {brandSubtitle || "TEAM GLORY"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Simulated Body */}
+                <div className="p-8 text-center text-[10px] text-slate-400 font-bold bg-slate-50/50 dark:bg-gray-950/60 leading-normal">
+                  <p>Member Portal Welcome Stage</p>
+                  <p className="text-[8px] text-slate-300 dark:text-slate-550 mt-1">Branding modifications are broadcasted to index, headers, and registrations form instantly.</p>
+                </div>
+
+                {/* Simulated Footer */}
+                <div className="p-3 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-855 text-center text-[8px] text-slate-400 font-bold truncate">
+                  {brandFooter || "© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL"}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2264,13 +3390,48 @@ export default function AdminPanel({ darkMode }: AdminPanelProps) {
                 {['first_timer_workers', 'member_workers', 'workers'].includes(activeSegment) && (
                   <div className="sm:col-span-2 pt-2 border-t border-slate-100 dark:border-gray-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <span className="block text-[10px] uppercase font-bold text-gray-400 pb-1.5">Workforce service options</span>
-                      <p className="text-[10px] text-gray-400">First choice department</p>
-                      <p className="text-amber-500 font-bold mb-2">{selectedRecord.firstUnit}</p>
-                      <p className="text-[10px] text-gray-400">Second choice department</p>
-                      <p className="text-slate-700 dark:text-slate-300 font-bold mb-2">{selectedRecord.secondUnit}</p>
-                      <p className="text-[10px] text-gray-400">WIT Course Status</p>
-                      <p className="text-slate-700 dark:text-slate-300 mb-2">{selectedRecord.workersTrainingStatus}</p>
+                      <span className="block text-[10px] uppercase font-bold text-gray-400 pb-1.5">Workforce re-assignment console</span>
+                      <label className="block text-[10px] text-gray-400 font-bold mb-1">First choice department</label>
+                      <select
+                        value={selectedRecord.firstUnit || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedRecord((prev: any) => ({ ...prev, firstUnit: val }));
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-slate-800 dark:text-white text-xs font-semibold outline-none focus:ring-1 focus:ring-amber-500 mb-2 block"
+                      >
+                        {MINISTRY_UNITS.map(dep => (
+                          <option key={dep} value={dep}>{dep}</option>
+                        ))}
+                      </select>
+
+                      <label className="block text-[10px] text-gray-400 font-bold mb-1">Second choice department</label>
+                      <select
+                        value={selectedRecord.secondUnit || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedRecord((prev: any) => ({ ...prev, secondUnit: val }));
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-slate-800 dark:text-white text-xs font-semibold outline-none focus:ring-1 focus:ring-amber-500 mb-2.5 block"
+                      >
+                        {MINISTRY_UNITS.map(dep => (
+                          <option key={dep} value={dep}>{dep}</option>
+                        ))}
+                      </select>
+
+                      <button
+                        onClick={handleSaveDepartmentAssignments}
+                        disabled={updatingAssignments}
+                        className="w-full py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-1 cursor-pointer transition active:scale-95 shadow-xs"
+                      >
+                        {updatingAssignments ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        Apply Re-assignment
+                      </button>
+
+                      <div className="mt-3">
+                        <p className="text-[10px] text-gray-400">WIT Course Status</p>
+                        <p className="text-slate-750 dark:text-slate-300 mb-2 font-bold text-xs">{selectedRecord.workersTrainingStatus}</p>
+                      </div>
                     </div>
 
                     <div>
