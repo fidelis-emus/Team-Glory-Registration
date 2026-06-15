@@ -193,14 +193,14 @@ function normalizeDoc(doc: any) {
 
 // Unified CRUD Data Access Layers
 async function getCollectionDocs(collName: string): Promise<any[]> {
-  const mDb = await getMongoDb();
-  if (mDb) {
-    try {
+  try {
+    const mDb = await getMongoDb();
+    if (mDb) {
       const items = await mDb.collection(collName).find({}).toArray();
       return items.map(normalizeDoc);
-    } catch (err: any) {
-      console.error(`[DB] Fetch collection "${collName}" failed:`, err.message);
     }
+  } catch (err: any) {
+    console.error(`[DB] Fetch collection "${collName}" failed, falling back to local storage:`, err.message);
   }
   // Local fallback
   const local = readLocalDb();
@@ -208,17 +208,17 @@ async function getCollectionDocs(collName: string): Promise<any[]> {
 }
 
 async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
-  const mDb = await getMongoDb();
   const idValue = docData.id || docData._id || 'REC' + Math.random().toString(36).substring(2, 9).toUpperCase();
   const payload = { ...docData, id: idValue, _id: idValue };
 
-  if (mDb) {
-    try {
+  try {
+    const mDb = await getMongoDb();
+    if (mDb) {
       await mDb.collection(collName).replaceOne({ _id: idValue }, payload, { upsert: true });
       return payload;
-    } catch (err: any) {
-      console.error(`[DB] Save document to "${collName}" failed:`, err.message);
     }
+  } catch (err: any) {
+    console.error(`[DB] Save document to "${collName}" failed, falling back to local storage:`, err.message);
   }
 
   // Local write through
@@ -235,14 +235,14 @@ async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
 }
 
 async function updateCollectionDoc(collName: string, id: string, updatedFields: any): Promise<boolean> {
-  const mDb = await getMongoDb();
-  if (mDb) {
-    try {
+  try {
+    const mDb = await getMongoDb();
+    if (mDb) {
       await mDb.collection(collName).updateOne({ _id: id }, { $set: updatedFields });
       return true;
-    } catch (err: any) {
-      console.error(`[DB] Update document in "${collName}" failed:`, err.message);
     }
+  } catch (err: any) {
+    console.error(`[DB] Update document in "${collName}" failed, falling back to local storage:`, err.message);
   }
 
   // Local fallback
@@ -258,14 +258,14 @@ async function updateCollectionDoc(collName: string, id: string, updatedFields: 
 }
 
 async function deleteCollectionDoc(collName: string, id: string): Promise<boolean> {
-  const mDb = await getMongoDb();
-  if (mDb) {
-    try {
+  try {
+    const mDb = await getMongoDb();
+    if (mDb) {
       await mDb.collection(collName).deleteOne({ _id: id });
       return true;
-    } catch (err: any) {
-      console.error(`[DB] Delete document in "${collName}" failed:`, err.message);
     }
+  } catch (err: any) {
+    console.error(`[DB] Delete document in "${collName}" failed, falling back to local storage:`, err.message);
   }
 
   // Local fallback

@@ -247,7 +247,15 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [newHodPhone, setNewHodPhone] = useState('');
 
   // --- Dynamic Administrative Panel Management ---
-  const [adminUser, setAdminUser] = useState<any | null>(null);
+  const [adminUser, setAdminUser] = useState<any | null>(() => {
+    try {
+      const savedAdmin = localStorage.getItem('team_glory_logged_in_admin');
+      if (savedAdmin) {
+        return JSON.parse(savedAdmin);
+      }
+    } catch (e) {}
+    return null;
+  });
   const [allAdminAccounts, setAllAdminAccounts] = useState<any[]>([]);
   const [adminFormName, setAdminFormName] = useState('');
   const [adminFormEmail, setAdminFormEmail] = useState('');
@@ -256,7 +264,16 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [isAddingAdminUser, setIsAddingAdminUser] = useState(false);
   const [changingPassUser, setChangingPassUser] = useState<any | null>(null);
   const [newPasswordVal, setNewPasswordVal] = useState('');
-  const [firstLoginPassChange, setFirstLoginPassChange] = useState<boolean>(false);
+  const [firstLoginPassChange, setFirstLoginPassChange] = useState<boolean>(() => {
+    try {
+      const savedAdmin = localStorage.getItem('team_glory_logged_in_admin');
+      if (savedAdmin) {
+        const parsed = JSON.parse(savedAdmin);
+        return !!(parsed.isFirstLogin || parsed.requiresPasswordReset);
+      }
+    } catch (e) {}
+    return false;
+  });
   const [adminAccountError, setAdminAccountError] = useState<string | null>(null);
 
   // --- Branding Edit States ---
@@ -321,17 +338,6 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
 
   // Monitor dynamic configurations and administrative user sessions
   useEffect(() => {
-    try {
-      const savedAdmin = localStorage.getItem('team_glory_logged_in_admin');
-      if (savedAdmin) {
-        const parsed = JSON.parse(savedAdmin);
-        setAdminUser(parsed);
-        if (parsed.isFirstLogin || parsed.requiresPasswordReset) {
-          setFirstLoginPassChange(true);
-        }
-      }
-    } catch (e) {}
-
     const loadConfigs = async () => {
       try {
         const cfg = await safeFetchJson('/api/branding');
@@ -387,7 +393,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       }
     };
     loadConfigs();
-  }, [adminUser]);
+  }, []);
 
   // Legacy Firebase Firestore Realtime Listeners have been successfully migrated to standard pool syncs.
 
