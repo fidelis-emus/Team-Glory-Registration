@@ -21,7 +21,8 @@ const ai = new GoogleGenAI({
 const serverApp = express();
 const PORT = 3000;
 
-serverApp.use(express.json());
+serverApp.use(express.json({ limit: '50mb' }));
+serverApp.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Log incoming HTTP requests for route verification
 serverApp.use((req, res, next) => {
@@ -191,6 +192,20 @@ function normalizeDoc(doc: any) {
   return copy;
 }
 
+// Helper to safety-coerce offline local objects/arrays to arrays
+function getArrayFromLocal(local: any, collName: string): any[] {
+  const value = local[collName];
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === 'object') {
+    const item = { ...value, id: value.id || 'main', _id: value._id || 'main' };
+    return [item];
+  }
+  return [];
+}
+
 // Unified CRUD Data Access Layers
 async function getCollectionDocs(collName: string): Promise<any[]> {
   try {
@@ -204,7 +219,7 @@ async function getCollectionDocs(collName: string): Promise<any[]> {
   }
   // Local fallback
   const local = readLocalDb();
-  return local[collName] || [];
+  return getArrayFromLocal(local, collName);
 }
 
 async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
@@ -223,13 +238,14 @@ async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
 
   // Local write through
   const local = readLocalDb();
-  local[collName] = local[collName] || [];
-  const idx = local[collName].findIndex((x: any) => x.id === idValue);
+  const list = getArrayFromLocal(local, collName);
+  const idx = list.findIndex((x: any) => x.id === idValue);
   if (idx !== -1) {
-    local[collName][idx] = payload;
+    list[idx] = payload;
   } else {
-    local[collName].push(payload);
+    list.push(payload);
   }
+  local[collName] = list;
   writeLocalDb(local);
   return payload;
 }
@@ -247,10 +263,11 @@ async function updateCollectionDoc(collName: string, id: string, updatedFields: 
 
   // Local fallback
   const local = readLocalDb();
-  const list = local[collName] || [];
+  const list = getArrayFromLocal(local, collName);
   const idx = list.findIndex((x: any) => x.id === id);
   if (idx !== -1) {
     list[idx] = { ...list[idx], ...updatedFields };
+    local[collName] = list;
     writeLocalDb(local);
     return true;
   }
@@ -270,7 +287,7 @@ async function deleteCollectionDoc(collName: string, id: string): Promise<boolea
 
   // Local fallback
   const local = readLocalDb();
-  const list = local[collName] || [];
+  const list = getArrayFromLocal(local, collName);
   local[collName] = list.filter((x: any) => x.id !== id);
   writeLocalDb(local);
   return true;
