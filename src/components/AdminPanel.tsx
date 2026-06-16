@@ -403,7 +403,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     try {
       const getSegmentData = async (segment: string) => {
         try {
-          return await safeFetchJson(`/api/records/${segment}`);
+          const res = await safeFetchJson(`/api/records/${segment}`);
+          return Array.isArray(res) ? res : [];
         } catch (e) {
           return [];
         }
@@ -1335,14 +1336,15 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
 
   const updateBdayTemplate = (theme: string, name: string) => {
     let msg = '';
+    const firstName = name.trim().split(/\s+/)[0] || name;
     if (theme === 'Prophetic Blessing') {
-      msg = `Dear ${name},\n\nRCCG House of Glory, YP2 celebrates your beautiful birthday today! We pray that this new year of your life holds prophetic open doors, divine elevation, and an abundance of spiritual blessings. May the glory of God shine brightly upon you in all that you do!\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+      msg = `Happy Birthday, ${firstName}! 🎉\nMay God almighty open prophetic doors of breakthrough and joy for you today.\nWe pray that His divine presence continues to lift you up and bless your steps.\nEnjoy your special and highly favored day!\n\nFrom House of Glory, We Care About You ❤️`;
     } else if (theme === 'Joyful Celebration') {
-      msg = `Happy Birthday ${name}!\n\nRCCG House of Glory, YP2 rejoices with you today on this joyful birthday anniversary. We are incredibly grateful to have you as a valued part of our church family. May your day and year be filled with laughter, boundless joy, and endless testimonies!\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+      msg = `Happy Birthday, ${firstName}! 🎉\nWe thank God for the blessing and joy you are to the body of Christ.\nMay your new year be filled with laughter, deep peace, and countless testimonies.\nHave a beautiful and wonderful celebration today!\n\nFrom House of Glory, We Care About You ❤️`;
     } else if (theme === 'Divine Peace') {
-      msg = `Dear ${name},\n\nAs you celebrate your special birthday today, RCCG House of Glory, YP2 prays for the Lord's divine peace that surpasses all human understanding to guard your heart and mind. Have a peaceful, glorious, and spiritually refreshing year ahead!\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+      msg = `Happy Birthday, ${firstName}! ❤️\nMay the perfect peace of Christ rest upon your heart and mind today.\nWe pray for divine health, boundless grace, and quiet rest in all your ways.\nHave a peaceful and truly blessed birthday!\n\nFrom House of Glory, We Care About You ❤️`;
     } else {
-      msg = `Dear ${name},\n\nRCCG House of Glory, YP2 wishes you a grand Happy Birthday! May your day be filled with God's perfect love, happiness, and wonderful family moments. We pray for divine guidance and safe keeping upon your life.\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+      msg = `Happy Birthday, ${firstName}! 🎉\nWe celebrate God's faithfulness and absolute goodness in your life today.\nMay His continuous favor, guidance, and endless love lead you in this new year.\nHave a marvelous and blessed day!\n\nFrom House of Glory, We Care About You ❤️`;
     }
     setBdayCustomMessage(msg);
     setBdayAiPromptTheme(theme as any);

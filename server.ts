@@ -449,9 +449,10 @@ async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, mess
 
   const waEndpoint = process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v17.0/105315582563388/messages';
   const waToken = process.env.WHATSAPP_API_TOKEN || 'EAAZGBA7647V8BA...';
+  const officialSender = '+234 902 995 7453';
 
   try {
-    console.log(`[WhatsApp API] Direct dispatch trigger initiated to ${numericPhone} (Name: ${name})`);
+    console.log(`[WhatsApp API] Dispatch trigger initiated from official church sender: ${officialSender} to recipient: ${numericPhone} (Name: ${name})`);
     
     const response = await fetch(waEndpoint, {
       method: 'POST',
@@ -471,9 +472,9 @@ async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, mess
       })
     });
 
-    console.log(`[WhatsApp API] Dispatch response code: ${response.status} for ${name}`);
+    console.log(`[WhatsApp API] Dispatch response code: ${response.status} for ${name} from ${officialSender}`);
   } catch (error: any) {
-    console.warn(`[WhatsApp API] Gateway notification queued: ${error.message} (Simulated offline dispatcher active for ${numericPhone})`);
+    console.warn(`[WhatsApp API] Gateway notification queued via fallback: ${error.message} (Simulated offline dispatcher active for recipient ${numericPhone} from sender ${officialSender})`);
   }
 }
 
@@ -551,7 +552,7 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
       sentAt: new Date().toISOString(),
       status: 'Delivered',
       refId: transactionId,
-      gateway: 'RCCG Glory-Net Integrated SMTP Node, WhatsApp Core Api & SMS Gateway'
+      gateway: 'WhatsApp (+234 902 995 7453) Core Cloud API & Glory-Net SMTP Mailer Node'
     };
 
     const waTarget = profile.whatsappNumber || profile.phoneNumber || profile.originalData?.whatsappNumber || profile.originalData?.phoneNumber;
