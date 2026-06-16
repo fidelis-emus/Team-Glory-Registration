@@ -945,14 +945,13 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1.5">Phone Number <span className="text-red-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1.5">Phone Number <span className="text-xs text-gray-400 dark:text-gray-500 font-normal">(Optional)</span></label>
                   <input 
                     type="tel" 
                     value={phoneNumber}
                     onChange={e => setPhoneNumber(e.target.value)}
                     placeholder="e.g. 08031234567" 
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none text-sm transition-all"
-                    required
                   />
                 </div>
                 <div>
@@ -969,14 +968,13 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1.5">Email Address <span className="text-red-500">*</span></label>
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1.5">Email Address <span className="text-xs text-gray-400 dark:text-gray-500 font-normal">(Optional)</span></label>
                   <input 
                     type="email" 
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                     placeholder="e.g. email@address.com" 
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none text-sm transition-all"
-                    required
                   />
                 </div>
                 <div>

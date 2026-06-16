@@ -93,7 +93,7 @@ const MONGODB_URI = process.env.MONGODB_URI;
 let mongoClient: MongoClient | null = null;
 let mongoDb: any = null;
 let lastMongoConnectAttempt = 0;
-const MONGO_COOLDOWN_MS = 60000; // 1 minute retry throttle on connection failure
+const MONGO_COOLDOWN_MS = 15000; // Retry throttling down to 15s
 let mongoConnectionFailedPermanently = false;
 
 async function getMongoDb() {
@@ -128,9 +128,9 @@ async function getMongoDb() {
   try {
     if (!mongoClient) {
       mongoClient = new MongoClient(MONGODB_URI, {
-        connectTimeoutMS: 3000,
-        socketTimeoutMS: 3000,
-        serverSelectionTimeoutMS: 3000
+        connectTimeoutMS: 5000,
+        socketTimeoutMS: 5000,
+        serverSelectionTimeoutMS: 5000
       });
       await mongoClient.connect();
       console.log('[Database] Connected successfully to live MongoDB server.');
@@ -143,15 +143,7 @@ async function getMongoDb() {
     return mongoDb;
   } catch (err: any) {
     console.error('[Database] MongoDB failed to connect, falling back to local file:', err.message);
-    if (
-      err.message.includes('ENOTFOUND') || 
-      err.message.includes('EAI_AGAIN') || 
-      err.message.includes('ECONNREFUSED') || 
-      err.message.includes('timeout')
-    ) {
-      console.warn('[Database] Network or DNS error detected. Live MongoDB connections will be bypassed to prevent server lookup hangs.');
-      mongoConnectionFailedPermanently = true;
-    }
+    // DO NOT set mongoConnectionFailedPermanently to true on network/DNS timeout errors so it is able to automatically reconnect later!
     return null;
   }
 }
@@ -361,27 +353,61 @@ function parseDateOfBirth(dob: string | undefined): { month: number; day: number
 
 // Fallback template blessings
 function generateLocalTemplateBlessing(fullName: string, theme: string): string {
+  const firstName = fullName.trim().split(/\s+/)[0] || fullName;
   if (theme === 'Prophetic Blessing') {
-    return `Dear ${fullName},\n\nRCCG House of Glory, YP2 celebrates your beautiful birthday today! We pray that this new year of your life holds prophetic open doors, divine elevation, and an abundance of spiritual blessings. May the glory of God shine brightly upon you in all that you do!\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+    return `Happy Birthday, ${firstName}! 🎉
+May God almighty open prophetic doors of breakthrough and joy for you today.
+We pray that His divine presence continues to lift you up and bless your steps.
+Enjoy your special and highly favored day!
+
+From House of Glory, We Care About You ❤️`;
   } else if (theme === 'Joyful Celebration') {
-    return `Happy Birthday ${fullName}!\n\nRCCG House of Glory, YP2 rejoices with you today on this joyful birthday anniversary. We are incredibly grateful to have you as a valued part of our church family. May your day and year be filled with laughter, boundless joy, and endless testimonies!\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+    return `Happy Birthday, ${firstName}! 🎉
+We thank God for the blessing and joy you are to the body of Christ.
+May your new year be filled with laughter, deep peace, and countless testimonies.
+Have a beautiful and wonderful celebration today!
+
+From House of Glory, We Care About You ❤️`;
   } else if (theme === 'Divine Peace') {
-    return `Dearest ${fullName},\n\nOn this blessed anniversary of your birth, we speak divine peace, spiritual stability, and grace over your life. May the Lord keep you, lift His countenance upon you, and grant you quiet rest and assurance in every area of your endeavors.\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+    return `Happy Birthday, ${firstName}! ❤️
+May the perfect peace of Christ rest upon your heart and mind today.
+We pray for divine health, boundless grace, and quiet rest in all your ways.
+Have a peaceful and truly blessed birthday!
+
+From House of Glory, We Care About You ❤️`;
   }
-  return `Dear ${fullName},\n\nWarmest birthday wishes from all of us at RCCG House of Glory, YP2! We pray for sound health, prosperity, and continuous favor as you step into another blessed year of life.\n\nWarm regards,\nAdministrative Desk\nRCCG House of Glory, YP2`;
+  return `Happy Birthday, ${firstName}! 🎉
+We celebrate God's faithfulness and absolute goodness in your life today.
+May His continuous favor, guidance, and endless love lead you in this new year.
+Have a marvelous and blessed day!
+
+From House of Glory, We Care About You ❤️`;
 }
 
 // Generate personalized blessing using Gemini if available
 async function generateBirthdayBlessing(fullName: string, theme: string): Promise<string> {
+  const firstName = fullName.trim().split(/\s+/)[0] || fullName;
   if (!process.env.GEMINI_API_KEY) {
     return generateLocalTemplateBlessing(fullName, theme);
   }
 
   try {
-    const prompt = `Write a personalized, warm, encouraging Christian birthday blessing for ${fullName}.
-Theme: "${theme}" (e.g. Prophetic Blessing, Joyful Celebration, Divine Peace, or Standard Warm Wishes).
-The church is "RCCG House of Glory, YP2".
-Keep the greeting friendly, spiritually rich, elegant, and concise (under 100 words), signed by "Administrative Desk, RCCG House of Glory, YP2". Avoid markdown headers.`;
+    const prompt = `You are an automation assistant integrated into a church management system called Team Glory Registration System.
+Your task is to automatically generate and send a Happy Birthday WhatsApp message to a church member.
+
+📌 Instructions:
+- Generate a personalized birthday blessing message.
+- Strictly use the member’s first name: "${firstName}" in the message.
+- Keep the message warm, respectful, and spiritually uplifting.
+- The tone should reflect a Christian/church community environment.
+- Include a short prayer or blessing.
+- Keep the message extremely concise (3 to 6 lines maximum).
+- Under no circumstances include more than 3 emojis total.
+- Output ONLY the final WhatsApp message text ready to be sent (no introductory text, no explanations, no markdown headers, and no metadata).
+
+✍️ Required Signature:
+At the end of every message, always include this line exactly (ensure there is a blank line before it):
+From House of Glory, We Care About You ❤️`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.5-flash',
@@ -390,7 +416,23 @@ Keep the greeting friendly, spiritually rich, elegant, and concise (under 100 wo
 
     const rendered = response.text?.trim();
     if (rendered) {
-      return rendered;
+      // Safeguard signature
+      let finalMsg = rendered;
+      
+      // Clean any potential pre-existing/redundant signature styles but enforce the exact required one
+      const targetSignature = 'From House of Glory, We Care About You ❤️';
+      if (!finalMsg.includes('From House of Glory')) {
+        finalMsg = finalMsg + '\n\n' + targetSignature;
+      } else {
+        // Enforce the exact line styling
+        const lines = finalMsg.split('\n');
+        const signatureIdx = lines.findIndex(l => l.includes('From House of Glory'));
+        if (signatureIdx !== -1) {
+          lines[signatureIdx] = targetSignature;
+          finalMsg = lines.join('\n');
+        }
+      }
+      return finalMsg;
     }
   } catch (error) {
     console.error('[Gemini] Failed to generate blessing, falling back to local template:', error);
