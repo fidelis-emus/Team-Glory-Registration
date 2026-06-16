@@ -751,7 +751,8 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
       // Match HOD for first Choose Department
       let matchedHodId: string | undefined = undefined;
       try {
-        const listHods: HeadOfDepartment[] = await safeFetchJson('/api/hods');
+        const fetchRes = await safeFetchJson('/api/hods');
+        const listHods: HeadOfDepartment[] = Array.isArray(fetchRes) ? fetchRes : [];
 
         const storedHodsRaw = localStorage.getItem('heads_of_departments');
         const localHods: HeadOfDepartment[] = storedHodsRaw ? JSON.parse(storedHodsRaw) : [];

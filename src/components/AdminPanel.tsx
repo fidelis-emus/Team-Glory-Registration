@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Volunteer, AuditLog, HeadOfDepartment, FirstTimer, Member, TrainingRegistration, HouseFellowshipRegistration, InterestGroupsRegistration } from '../types';
+import QRCode from 'qrcode';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, Legend
 } from 'recharts';
@@ -9,7 +10,7 @@ import {
   Download, Printer, Eye, Trash2, Calendar, FileText, Check, AlertCircle,
   Database, Shield, RefreshCw, UserCheck, BookOpen, Users, BarChart3, HelpCircle, 
   UserX, Building, Edit, Sparkles, Heart, MapPin, CheckCircle, PlusCircle, Settings, Key,
-  Loader2, Info, Briefcase, Cake, Gift, Send, Save
+  Loader2, Info, Briefcase, Cake, Gift, Send, Save, QrCode
 } from 'lucide-react';
 
 export function getBirthdayInfo(dob: string) {
@@ -205,6 +206,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loadingData, setLoadingData] = useState(false);
   const [errorData, setErrorData] = useState<string | null>(null);
+  const [memberQrCodeDataUrl, setMemberQrCodeDataUrl] = useState<string>('');
 
   // Active Main Navigation Tab
   const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit'>('dashboard');
@@ -239,6 +241,15 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [bdayAiPromptTheme, setBdayAiPromptTheme] = useState<'Prophetic Blessing' | 'Joyful Celebration' | 'Divine Peace' | 'Standard Warm Wishes'>('Prophetic Blessing');
   const [sendingBdayStatus, setSendingBdayStatus] = useState<'idle' | 'sending' | 'success' | 'failed'>('idle');
   const [sentDeliveryReport, setSentDeliveryReport] = useState<any | null>(null);
+
+  // Automated WhatsApp dispatch retry, logs & previewing states
+  const [birthdayDispatches, setBirthdayDispatches] = useState<any[]>([]);
+  const [isResending, setIsResending] = useState(false);
+  const [resendResult, setResendResult] = useState<any | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState<any | null>(null);
+  const [selectedPreviewTheme, setSelectedPreviewTheme] = useState<'Prophetic Blessing' | 'Joyful Celebration' | 'Divine Peace' | 'Standard Warm Wishes'>('Prophetic Blessing');
 
   // Temp states for adding new HOD
   const [newHodName, setNewHodName] = useState('');
@@ -441,7 +452,10 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
 
       try {
         const logs = await safeFetchJson('/api/birthdays/notifications');
-        if (logs && Array.isArray(logs)) setAuditLogs(logs);
+        if (logs && Array.isArray(logs)) {
+          setAuditLogs(logs);
+          setBirthdayDispatches(logs);
+        }
       } catch (e) {}
     } catch (e) {
       console.warn("Error fetching data:", e);
@@ -458,6 +472,28 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       return () => clearInterval(interval);
     }
   }, [adminUser]);
+
+  // Generate public member registration portal QR Code
+  useEffect(() => {
+    const generatePortalQr = async () => {
+      try {
+        const portalUrl = window.location.origin;
+        const qrUrl = await QRCode.toDataURL(portalUrl, {
+          width: 400,
+          margin: 1,
+          color: {
+            dark: '#1e293b', // slate-800
+            light: '#ffffff'
+          },
+          errorCorrectionLevel: 'H'
+        });
+        setMemberQrCodeDataUrl(qrUrl);
+      } catch (err) {
+        console.error('Failed to generate portal QR Code:', err);
+      }
+    };
+    generatePortalQr();
+  }, []);
 
   // Auditor tracking log helper
   const addAuditLog = (action: string, details: string) => {
@@ -1326,6 +1362,41 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     }
   };
 
+  const triggerResendToday = async () => {
+    setIsResending(true);
+    setResendResult(null);
+    try {
+      const data = await safeFetchJson('/api/birthdays/check-and-notify?forceRetry=true', { method: 'POST' });
+      if (data) {
+        setResendResult(data);
+        addAuditLog("Resend Birthday Dispatch", `Retriggered automated dispatch sweep with force-override. Count: ${data.notificationsCreatedCount || 0}`);
+        const refreshedLogs = await safeFetchJson('/api/birthdays/notifications');
+        if (refreshedLogs && Array.isArray(refreshedLogs)) setBirthdayDispatches(refreshedLogs);
+      } else {
+        setResendResult({ error: 'Failed to complete server birthday retry dispatch' });
+      }
+    } catch (err: any) {
+      setResendResult({ error: err.message || 'Network error executing retry dispatch' });
+    } finally {
+      setIsResending(false);
+    }
+  };
+
+  const fetchRandomPreview = async () => {
+    setPreviewLoading(true);
+    setPreviewData(null);
+    try {
+      const data = await safeFetchJson('/api/birthdays/preview-random');
+      if (data) {
+        setPreviewData(data);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
   const openBdayConsole = (target: any) => {
     setBdayMessagingTarget(target);
     setSendingBdayStatus('idle');
@@ -2094,7 +2165,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           </div>
 
           {/* Graphical Analytics Charts (Recharts) */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             {/* Trend Graph */}
             <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs p-5 lg:col-span-2 space-y-4">
               <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider border-b border-slate-100 dark:border-gray-750 pb-2.5">Monthly Registration Growth</h3>
@@ -2152,6 +2223,55 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                 ))}
               </div>
             </div>
+
+            {/* Public Member Portal QR Code Card */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs p-5 space-y-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center gap-2 border-b border-slate-100 dark:border-gray-750 pb-2.5">
+                  <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600">
+                    <QrCode className="w-4 h-4 animate-pulse" />
+                  </div>
+                  <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider">Public Portal QR</h3>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-2 leading-normal">
+                  Let members or guests join the church registry. Scan matches your public browser home screen.
+                </p>
+                
+                <div className="flex flex-col items-center justify-center py-3 bg-slate-50/50 dark:bg-gray-900/30 rounded-2xl border border-dashed border-slate-150 dark:border-gray-750 mt-3 relative group">
+                  {memberQrCodeDataUrl ? (
+                    <>
+                      <img 
+                        src={memberQrCodeDataUrl} 
+                        alt="Member Portal QR Code" 
+                        className="w-28 h-28 object-contain rounded-lg shadow-sm border border-slate-100 dark:border-gray-700 bg-white p-1 transition-transform group-hover:scale-105 duration-200"
+                        referrerPolicy="no-referrer"
+                      />
+                      <span className="text-[9px] font-mono font-bold text-slate-500 mt-1.5 select-all hover:text-amber-500 max-w-[150px] truncate">
+                        {window.location.origin}
+                      </span>
+                    </>
+                  ) : (
+                    <div className="h-28 flex flex-col items-center justify-center text-gray-400">
+                      <Loader2 className="w-5 h-5 animate-spin mb-1 text-slate-400" />
+                      <span className="text-[9px]">Building Code...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-1">
+                {memberQrCodeDataUrl && (
+                  <a 
+                    href={memberQrCodeDataUrl} 
+                    download="rccg_member_portal_qr.png"
+                    className="px-4 py-2 bg-slate-900 hover:bg-black dark:bg-amber-500 dark:text-slate-900 dark:hover:bg-amber-450 text-white rounded-xl font-bold flex items-center justify-center gap-2 text-[10px] shadow-xs uppercase tracking-wider transition-all cursor-pointer w-full text-center"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download QR
+                  </a>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Birthdays due soon dashboard module */}
@@ -2194,12 +2314,13 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               </div>
 
               {/* Background Scanner Core manual dispatch */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={triggerBirthdayScan}
                   disabled={isScanning}
-                  className="px-3.5 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider bg-slate-900 hover:bg-black disabled:bg-gray-300 text-white flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider bg-slate-900 hover:bg-black disabled:bg-gray-350 text-white flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                  title="Force a complete automated scan of birthdays scheduled for today."
                 >
                   {isScanning ? (
                     <>
@@ -2211,18 +2332,45 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     </>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={triggerResendToday}
+                  disabled={isResending}
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider bg-rose-600 hover:bg-rose-700 disabled:bg-rose-350 text-white flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                  title="Manually retry dispatching failed automated messages for today's birthday celebrants."
+                >
+                  {isResending ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Retrying...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5" /> Resend Today's Messages
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setShowPreviewModal(true); fetchRandomPreview(); }}
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider bg-teal-650 hover:bg-teal-700 text-white flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                  title="See a preview draft of generated WhatsApp birthday blessings using a random registered member."
+                >
+                  <Eye className="w-3.5 h-3.5" /> Preview Birthday Message
+                </button>
               </div>
             </div>
 
             {/* Sweep reports */}
             {scanResult && (
-              <div className="p-3.5 rounded-2xl bg-amber-500/5 border border-amber-500/15 text-slate-700 dark:text-slate-300 text-xs flex flex-col gap-1.5">
+              <div className="p-3.5 rounded-2xl bg-amber-500/5 border border-amber-500/15 text-slate-700 dark:text-slate-300 text-xs flex flex-col gap-1.5 h-auto transition-all">
                 {scanResult.error ? (
                   <p className="text-red-500 font-bold">⚠️ {scanResult.error}</p>
                 ) : (
                   <>
                     <h5 className="font-extrabold text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                      <Check className="w-4 h-4" /> Automated Broadcast Sweep Completed Successfully
+                      <Check className="w-4 h-4 text-emerald-550" /> Automated Broadcast Sweep Completed Successfully
                     </h5>
                     <p className="leading-relaxed font-semibold">
                       Successfully scanned on server for date <span className="font-extrabold text-slate-900 dark:text-white">{scanResult.scannedDate}</span>. 
@@ -2235,7 +2383,41 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                         <div className="flex flex-wrap gap-1.5 mt-1">
                           {scanResult.dispatchedLogs.map((log: any, idx: number) => (
                             <span key={idx} className="px-2 py-0.5 rounded-md bg-white dark:bg-gray-850 border border-amber-500/10 text-[10px] text-slate-700 dark:text-slate-300 font-medium">
-                              📬 {log.recipientName} ({log.channel})
+                              📬 {log.recipientName} ({log.channel}) - <strong className="text-emerald-500">{log.status || 'Active'}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Manual Resend Reports */}
+            {resendResult && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/5 border border-rose-500/15 text-slate-700 dark:text-slate-300 text-xs flex flex-col gap-1.5 animate-fade-in">
+                {resendResult.error ? (
+                  <p className="text-red-500 font-bold">⚠️ {resendResult.error}</p>
+                ) : (
+                  <>
+                    <h5 className="font-extrabold text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                      <RefreshCw className="w-3.5 h-3.5 text-rose-500" /> Manual Retry & Dispatch Operation Executed
+                    </h5>
+                    <p className="leading-relaxed font-semibold">
+                      Forced server retry scan successfully completed for <span className="font-extrabold text-slate-900 dark:text-white">{resendResult.scannedDate}</span>. 
+                      Checked <span className="font-extrabold text-indigo-600 dark:text-indigo-400">{resendResult.potentialMatches?.length || 0} potential candidates</span>. 
+                      Overrode block limits and successfully re-broadcast <span className="font-extrabold text-rose-600 dark:text-rose-400">{resendResult.notificationsCreatedCount} WhatsApp messages</span>.
+                    </p>
+                    {resendResult.dispatchedLogs && resendResult.dispatchedLogs.length > 0 && (
+                      <div className="mt-1 pt-1.5 border-t border-rose-500/10">
+                        <span className="text-[10px] uppercase font-bold text-gray-400">Manual Re-dispatch Outcomes:</span>
+                        <div className="flex flex-wrap gap-1.5 mt-1">
+                          {resendResult.dispatchedLogs.map((log: any, idx: number) => (
+                            <span key={idx} className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${
+                              log.status === 'Sent' ? 'bg-emerald-500/5 text-emerald-600 border-emerald-500/20' : 'bg-red-500/5 text-rose-600 border-red-500/25'
+                            }`}>
+                              📬 {log.recipientName} ({log.whatsappNumber || log.phoneNumber}) - {log.status}
                             </span>
                           ))}
                         </div>
@@ -2332,6 +2514,108 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                 })}
               </div>
             )}
+
+            {/* WhatsApp delivery status logs section */}
+            <div className="bg-slate-50/50 dark:bg-gray-900/30 rounded-2xl border border-slate-150 dark:border-gray-750 p-5 mt-6 space-y-4">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-100 dark:border-gray-750 pb-3 gap-3">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="p-1 rounded-lg bg-indigo-500/10 text-indigo-505 dark:bg-indigo-500/5">
+                      <QrCode className="w-4 h-4" />
+                    </span>
+                    <h4 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Automated WhatsApp Status History Log</h4>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1 leading-relaxed">
+                    Live delivery status of automated birthday blessings dispatched today and historic logs for easy network troubleshooting.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const refreshedLogs = await safeFetchJson('/api/birthdays/notifications');
+                    if (refreshedLogs && Array.isArray(refreshedLogs)) setBirthdayDispatches(refreshedLogs);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-750 text-white text-[9px] font-bold uppercase tracking-wider flex items-center gap-1 select-none cursor-pointer transition-all"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh Logs
+                </button>
+              </div>
+
+              <div className="max-h-[300px] overflow-y-auto rounded-xl border border-slate-150 dark:border-gray-700 bg-white dark:bg-gray-800 divide-y divide-slate-100 dark:divide-gray-750">
+                {birthdayDispatches.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 text-xs font-bold leading-normal">
+                    <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1 text-slate-400" />
+                    No automated birthday dispatches recorded. Click Sweep or retry above to trigger broadcasts.
+                  </div>
+                ) : (
+                  birthdayDispatches.map((log: any, idx: number) => {
+                    const isSuccess = log.status === 'Sent' || log.status === 'Delivered';
+                    return (
+                      <div key={idx} className="p-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs animate-fade-in">
+                        <div className="flex items-center gap-2.5 min-w-[200px] max-w-xs">
+                          <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-[11px] flex-shrink-0 ${
+                            isSuccess
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                              : 'bg-rose-50 text-rose-700 dark:bg-rose-955/40 dark:text-rose-400'
+                          }`}>
+                            {log.recipientName?.charAt(0) || 'M'}
+                          </span>
+                          <div className="space-y-0.5 truncate">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-extrabold text-slate-800 dark:text-white truncate">{log.recipientName}</span>
+                              <span className="text-[8px] px-1 rounded bg-slate-100 dark:bg-gray-700 text-gray-400 font-extrabold uppercase shrink-0">
+                                {log.segment || 'Registry'}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-x-2 text-[10px] text-gray-450 truncate">
+                              <span>📱 {log.whatsappNumber || log.phoneNumber || 'N/A'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Message Content Bubble excerpt */}
+                        <div className="flex-1 max-w-lg bg-slate-50 dark:bg-gray-900 rounded-lg p-2.5 border border-slate-100 dark:border-gray-750/70 text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                          "{log.message}"
+                        </div>
+
+                        {/* Status elements */}
+                        <div className="flex items-center justify-between md:justify-end gap-4 min-w-[150px] text-right flex-shrink-0">
+                          <div>
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
+                              isSuccess
+                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/10'
+                                : 'bg-red-500/10 text-rose-600 dark:text-rose-400 border border-red-500/10'
+                            }`}>
+                              {isSuccess ? (
+                                <>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                  Sent
+                                </>
+                              ) : (
+                                <>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                  Failed
+                                </>
+                              )}
+                            </span>
+                            
+                            {log.errorDetail && (
+                              <p className="text-[8px] text-rose-500 mt-0.5 font-medium max-w-[120px] truncate" title={log.errorDetail}>
+                                ⚠️ {log.errorDetail}
+                              </p>
+                            )}
+
+                            <p className="text-[8px] text-gray-400 font-mono mt-0.5 whitespace-nowrap">
+                              Time: {log.sentAt ? new Date(log.sentAt).toLocaleTimeString() : 'N/A'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -3793,6 +4077,147 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   </div>
                 </div>
               )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* --- BIRTHDAY MESSAGE STATIC PREVIEW MODAL --- */}
+      <AnimatePresence>
+        {showPreviewModal && (
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 print:hidden"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 15 }} 
+              animate={{ scale: 1, y: 0 }} 
+              exit={{ scale: 0.95, y: 15 }}
+              className="bg-white dark:bg-gray-900 border border-slate-205 dark:border-gray-750 p-6 sm:p-7 rounded-3xl shadow-2xl max-w-lg w-full relative"
+            >
+              <button 
+                onClick={() => setShowPreviewModal(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-red-500 font-extrabold text-xs transition-colors p-2 cursor-pointer"
+              >
+                Close
+              </button>
+
+              <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-gray-800 pb-3.5 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-teal-500/10 text-teal-600 dark:text-teal-400 flex items-center justify-center">
+                  <Eye className="w-5 h-5 text-teal-500" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-800 dark:text-white">Live Birthday Message Simulation</h3>
+                  <p className="text-[10px] text-gray-400 font-medium font-mono">CHANNEL: Automated WhatsApp Dispatcher</p>
+                </div>
+              </div>
+
+              {previewLoading ? (
+                <div className="py-20 text-center text-xs text-gray-400 space-y-2">
+                  <Loader2 className="w-6 h-6 animate-spin mx-auto text-teal-555" />
+                  <p className="font-extrabold text-slate-700 dark:text-slate-350 tracking-wider uppercase text-[10px]">Consulting Member Records...</p>
+                  <p className="text-[10px]">Preparing random database profile matching and draft rendering.</p>
+                </div>
+              ) : previewData ? (
+                <div className="space-y-4">
+                  
+                  {/* Selected random profile metadata card */}
+                  <div className="bg-slate-50 dark:bg-gray-950/60 rounded-2xl p-3 border border-slate-100 dark:border-gray-800/80 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-7 h-7 rounded-full bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-400 flex items-center justify-center font-black text-xs uppercase shrink-0">
+                        {previewData.user?.fullName?.charAt(0) || 'C'}
+                      </span>
+                      <div className="truncate">
+                        <h4 className="font-black text-slate-800 dark:text-white truncate max-w-[150px]">{previewData.user?.fullName}</h4>
+                        <p className="text-[9px] text-gray-400 uppercase font-bold tracking-wider">{previewData.segmentLabel}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-black text-teal-600 dark:text-teal-400">📅 {previewData.user?.birthMonth || previewData.user?.dob ? 'Birthday Match!' : 'Celebrant'}</p>
+                      <p className="text-[9px] text-gray-405 font-mono mt-0.5">📞 {previewData.user?.whatsappNumber || previewData.user?.phoneNumber || 'N/A'}</p>
+                    </div>
+                  </div>
+
+                  {/* Template selections */}
+                  <div className="space-y-1.5">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest">Toggle AI Blessing Theme</label>
+                    <div className="flex flex-wrap gap-1">
+                      {(['Prophetic Blessing', 'Joyful Celebration', 'Divine Peace', 'Standard Warm Wishes'] as const).map((theme) => (
+                        <button
+                          key={theme}
+                          type="button"
+                          onClick={() => setSelectedPreviewTheme(theme)}
+                          className={`px-2.5 py-1 rounded-full border text-[9px] font-black tracking-tight transition cursor-pointer ${
+                            selectedPreviewTheme === theme
+                              ? 'bg-teal-100 dark:bg-teal-900/30 text-teal-705 dark:text-teal-450 border-teal-500'
+                              : 'bg-slate-50 dark:bg-gray-850 text-slate-500 dark:text-gray-400 border-transparent hover:bg-slate-100'
+                          }`}
+                        >
+                          {theme}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Smartphone Message Body Mock-up */}
+                  <div className="space-y-1.5 pt-1">
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest">Live WhatsApp WhatsApp View Render</label>
+                    
+                    <div className="bg-slate-100 dark:bg-gray-950 rounded-2xl p-4 border border-slate-205 dark:border-gray-850 flex flex-col gap-2">
+                      <div className="flex items-center gap-1.5 text-[9px] text-gray-400 border-b border-slate-200/40 dark:border-gray-850/60 pb-1.5 mb-1 justify-between">
+                        <span className="font-bold flex items-center gap-1">🟢 SENDER OFFICIAL: +234 902 995 7453</span>
+                        <span className="font-semibold text-slate-500 font-mono uppercase">RCCG GLORY-NET</span>
+                      </div>
+
+                      {/* WhatsApp Speech Bubble */}
+                      <div className="relative bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30 rounded-2xl rounded-tl-none p-3 shadow-2xs max-w-[90%] text-xs text-slate-800 dark:text-slate-200 leading-relaxed font-semibold">
+                        <p className="whitespace-pre-line leading-relaxed font-semibold">
+                          {selectedPreviewTheme === 'Prophetic Blessing' && previewData.blessings?.prophetic}
+                          {selectedPreviewTheme === 'Joyful Celebration' && previewData.blessings?.joyful}
+                          {selectedPreviewTheme === 'Divine Peace' && previewData.blessings?.divine}
+                          {selectedPreviewTheme === 'Standard Warm Wishes' && previewData.blessings?.standard}
+                        </p>
+                        
+                        <span className="block mt-1.5 text-right text-[8px] text-emerald-600 dark:text-emerald-400 font-bold whitespace-nowrap">
+                          {new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ✓✓
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setShowPreviewModal(false)}
+                      className="px-4 py-2 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-500 border border-slate-250 dark:border-gray-700 rounded-xl cursor-pointer font-bold text-xs"
+                    >
+                      Close Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={fetchRandomPreview}
+                      className="px-5 py-2 bg-teal-650 hover:bg-teal-700 text-white rounded-xl shadow-sm font-black flex items-center gap-1.5 cursor-pointer text-xs"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Shuffle Member
+                    </button>
+                  </div>
+
+                </div>
+              ) : (
+                <div className="py-12 text-center text-xs text-gray-400 space-y-2">
+                  <p>Could not load any database members to render preview blessings.</p>
+                  <button
+                    type="button"
+                    onClick={fetchRandomPreview}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs"
+                  >
+                    Retry Loading
+                  </button>
+                </div>
+              )}
+
             </motion.div>
           </motion.div>
         )}
