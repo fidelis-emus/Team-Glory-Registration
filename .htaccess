@@ -1,0 +1,20 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Direct any requests to nonexistent files/directories to api.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^api/(.*)$ api.php?route=$1 [QSA,L]
+    RewriteRule ^(.*)$ api.php?route=$1 [QSA,L]
+</IfModule>
+
+# Basic optimization settings for PHP deployment
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE application/json
+</IfModule>
+
+# Protect SQLite database file from direct public browser downloads
+<Files "*.sqlite">
+    Order deny,allow
+    Deny from all
+</Files>

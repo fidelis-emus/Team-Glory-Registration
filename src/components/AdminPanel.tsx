@@ -9,7 +9,7 @@ import {
   Lock, Mail, LogOut, Search, Filter, ArrowUpDown, ChevronDown, 
   Download, Printer, Eye, Trash2, Calendar, FileText, Check, AlertCircle,
   Database, Shield, RefreshCw, UserCheck, BookOpen, Users, BarChart3, HelpCircle, 
-  UserX, Building, Edit, Sparkles, Heart, MapPin, CheckCircle, PlusCircle, Settings, Key,
+  UserX, Building, Edit, Sparkles, Heart, MapPin, CheckCircle, PlusCircle, Settings, Key, ShieldCheck,
   Loader2, Info, Briefcase, Cake, Gift, Send, Save, QrCode
 } from 'lucide-react';
 
@@ -149,27 +149,38 @@ export interface SystemLicense {
 
 export function validateLicenseKeyFormat(key: string): { valid: boolean; expiresAt: string; tier: string; error?: string } {
   const cleanKey = key.trim().toUpperCase();
-  // Format check: GLORY-NET-XXXX-XXXX-PROYEAR
-  const regex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-PRO(202[6-9]|203[0-5])$/;
-  const match = cleanKey.match(regex);
-  if (!match) {
-    return { valid: false, expiresAt: '', tier: '', error: 'Invalid format. Expected: GLORY-NET-XXXX-XXXX-PROYYYY' };
+
+  // Support Monthly, Quarterly, and Yearly subscription plans
+  const monthlyRegex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-MONTHLY$/;
+  const quarterlyRegex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-QUARTERLY$/;
+  const yearlyRegex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-YEARLY$/;
+  const proRegex = /^GLORY-NET-([A-Z0-9]{4})-([A-Z0-9]{4})-PRO(202[6-9]|203[0-5])$/;
+
+  if (monthlyRegex.test(cleanKey)) {
+    const expDate = new Date();
+    expDate.setDate(expDate.getDate() + 30);
+    return { valid: true, expiresAt: expDate.toISOString(), tier: 'Monthly Subscription' };
+  } else if (quarterlyRegex.test(cleanKey)) {
+    const expDate = new Date();
+    expDate.setDate(expDate.getDate() + 90);
+    return { valid: true, expiresAt: expDate.toISOString(), tier: 'Quarterly Subscription' };
+  } else if (yearlyRegex.test(cleanKey)) {
+    const expDate = new Date();
+    expDate.setDate(expDate.getDate() + 365);
+    return { valid: true, expiresAt: expDate.toISOString(), tier: 'Yearly Subscription' };
+  } else if (proRegex.test(cleanKey)) {
+    const match = cleanKey.match(proRegex);
+    const year = parseInt(match![3], 10);
+    const expirationDate = `${year}-12-31T23:59:59.000Z`;
+    const expTime = new Date(expirationDate).getTime();
+    const nowTime = new Date().getTime();
+    if (expTime < nowTime) {
+      return { valid: false, expiresAt: expirationDate, tier: 'Enterprise Pro', error: `This enterprise signature license expired on ${new Date(expirationDate).toLocaleDateString()}.` };
+    }
+    return { valid: true, expiresAt: expirationDate, tier: 'Enterprise Pro' };
   }
   
-  const year = parseInt(match[3], 10);
-  const expirationDate = `${year}-12-31T23:59:59.000Z`;
-  const expTime = new Date(expirationDate).getTime();
-  const nowTime = new Date().getTime();
-  
-  if (expTime < nowTime) {
-    return { valid: false, expiresAt: expirationDate, tier: 'Enterprise Pro', error: `This license signature expired on ${new Date(expirationDate).toLocaleDateString()}.` };
-  }
-  
-  return {
-    valid: true,
-    expiresAt: expirationDate,
-    tier: 'Enterprise Pro'
-  };
+  return { valid: false, expiresAt: '', tier: '', error: 'Invalid key signature format. Expected: GLORY-NET-XXXX-XXXX-MONTHLY, -QUARTERLY, -YEARLY, or -PROYYYY.' };
 }
 
 type RecordSegment =
@@ -272,6 +283,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [adminFormEmail, setAdminFormEmail] = useState('');
   const [adminFormPassword, setAdminFormPassword] = useState('');
   const [adminFormRole, setAdminFormRole] = useState<'SuperAdmin' | 'HOD' | 'Admin'>('Admin');
+  const [adminFormDept, setAdminFormDept] = useState('None');
   const [isAddingAdminUser, setIsAddingAdminUser] = useState(false);
   const [changingPassUser, setChangingPassUser] = useState<any | null>(null);
   const [newPasswordVal, setNewPasswordVal] = useState('');
@@ -522,15 +534,6 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       return;
     }
 
-    // System license check segment
-    const nowTime = new Date().getTime();
-    const expTime = new Date(systemLicense.expiresAt).getTime();
-    const isLicenseExpired = systemLicense.status === 'EXPIRED' || expTime < nowTime;
-    if (isLicenseExpired) {
-      setAuthError("CRITICAL EXPIRED LICENSE: The system administrator license has expired! Administration portal access is locked. Please enter a valid renewal license signature below.");
-      return;
-    }
-
     try {
       let loginUser: any = null;
 
@@ -556,6 +559,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             fullName: matchedLocalAdmin.fullName,
             email: matchedLocalAdmin.email,
             role: matchedLocalAdmin.role || 'Admin',
+            department: matchedLocalAdmin.department || 'None',
             isFirstLogin: matchedLocalAdmin.isFirstLogin || false,
             requiresPasswordReset: matchedLocalAdmin.requiresPasswordReset || false,
             createdAt: matchedLocalAdmin.createdAt || new Date().toISOString()
@@ -566,6 +570,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             fullName: 'System Administrator (Static Fallback)',
             email: 'admin@teamglory.com',
             role: 'SuperAdmin',
+            department: 'None',
             isFirstLogin: false,
             requiresPasswordReset: false,
             createdAt: new Date().toISOString()
@@ -578,6 +583,16 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
 
       if (!loginUser) {
         throw new Error('Authentication rejected. Please check administrative email/password.');
+      }
+
+      // System license check segment executed upon successful credentials match
+      const nowTime = new Date().getTime();
+      const expTime = new Date(systemLicense.expiresAt).getTime();
+      const isLicenseExpiredOnLogin = systemLicense.status === 'EXPIRED' || expTime < nowTime;
+      const parsedRole = loginUser.role || '';
+      
+      if (isLicenseExpiredOnLogin && parsedRole.toLowerCase() !== 'superadmin') {
+        throw new Error("LICENSE EXPIRED: This church platform platform subscription has expired (Monthly/Quarterly/Yearly Plan). Standard administration and HOD portal accounts are locked out. Please consult Super Admin to apply a renewed licence signature key.");
       }
       
       localStorage.setItem('team_glory_logged_in_admin', JSON.stringify(loginUser));
@@ -623,6 +638,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       email: adminFormEmail.trim().toLowerCase(),
       password: adminFormPassword,
       role: adminFormRole,
+      department: adminFormRole === 'SuperAdmin' ? 'None' : adminFormDept,
       isFirstLogin: true,
       requiresPasswordReset: false,
       createdAt: new Date().toISOString()
@@ -1602,6 +1618,19 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const filteredAndSortedRecords = useMemo(() => {
     let result = [...activeRecordsList];
 
+    // Enforce row-level department security for HOD or Admin (SuperAdmin has full access)
+    const deptFocus = adminUser?.department;
+    const isSuper = adminUser?.role === 'SuperAdmin';
+    if (deptFocus && deptFocus !== 'None' && !isSuper) {
+      result = result.filter((rec: any) => {
+        const matchesUnit = rec.firstUnit === deptFocus || rec.secondUnit === deptFocus;
+        const matchesDirectDept = rec.department === deptFocus;
+        const assignHod = hods.find(h => h.id === rec.assignedHodId);
+        const matchesHodDept = assignHod?.department === deptFocus;
+        return matchesUnit || matchesDirectDept || matchesHodDept;
+      });
+    }
+
     // Search query constraint
     if (searchQuery.trim()) {
       const queryStr = searchQuery.trim().toLowerCase();
@@ -1649,7 +1678,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     });
 
     return result;
-  }, [activeRecordsList, searchQuery, filterGender, filterUnit, filterDateFrom, filterDateTo, sortField, sortDirection]);
+  }, [activeRecordsList, searchQuery, filterGender, filterUnit, filterDateFrom, filterDateTo, sortField, sortDirection, adminUser, hods]);
 
   // Pagination bounds
   const paginatedRecords = useMemo(() => {
@@ -1969,6 +1998,41 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             </div>
           </div>
         </motion.div>
+      </div>
+    );
+  }
+
+  // Check top-level license status for logged in non-superadmin
+  const nowRenderTime = new Date().getTime();
+  const expRenderTime = new Date(systemLicense.expiresAt).getTime();
+  const isLicenseExpiredOnMainRender = systemLicense.status === 'EXPIRED' || expRenderTime < nowRenderTime;
+  const isLoggedUserSuperAdmin = adminUser?.role === 'SuperAdmin';
+
+  if (isLicenseExpiredOnMainRender && !isLoggedUserSuperAdmin) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-16 text-center">
+        <div className="bg-white dark:bg-gray-900 border border-red-500/30 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-red-500/10 text-red-600 dark:text-red-400 mb-4 animate-bounce">
+            <Lock className="w-5 h-5 text-red-500" />
+          </div>
+          <h2 className="text-xl font-black text-slate-800 dark:text-white uppercase tracking-tight">System Console Suspended</h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+            The platform's subscription license plan has expired. Administration and HOD panel operations are temporarily suspended.
+          </p>
+          <div className="mt-4 p-3 bg-red-50 dark:bg-red-950/20 border border-red-550/20 rounded-xl">
+            <span className="text-[10px] text-red-600 dark:text-red-400 font-extrabold block">
+              Please contact the Super Administrator immediately to renew the Monthly, Quarterly, or Yearly subscription plan.
+            </span>
+          </div>
+          <div className="mt-8 pt-5 border-t border-slate-100 dark:border-white/5">
+            <button 
+              onClick={handleLogout}
+              className="px-6 py-2.5 bg-slate-900 hover:bg-black text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -3188,6 +3252,81 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             </div>
           )}
 
+          {/* Subscription plans console widget */}
+          {adminUser?.role === 'SuperAdmin' && (
+            <div className="mt-4 border border-gray-250/65 dark:border-gray-800 p-5 rounded-3xl bg-slate-50/50 dark:bg-gray-900/40 space-y-4">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-amber-500" />
+                <h4 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">RCCG Glory-Net Subscription License Center</h4>
+              </div>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 leading-normal max-w-2xl font-semibold">
+                Super Administrators can view plans and generate valid subscription activation signatures. Activating a key grants application capabilities. Standard Parish HOD levels are locked once a plan expires.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
+                {/* Monthly Plan */}
+                <div className="p-4 rounded-2xl bg-white dark:bg-gray-950 border border-slate-200 dark:border-gray-850 flex flex-col justify-between hover:shadow-md transition">
+                  <div>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] uppercase font-black bg-blue-500/10 text-blue-600 dark:text-blue-400">Monthly</span>
+                    <h5 className="text-xs font-extrabold text-slate-800 dark:text-white mt-2">Monthly Plan</h5>
+                    <p className="text-[9px] text-gray-400 dark:text-gray-500 mt-1 font-semibold">Valid for 30 Days. Full departmental access for short term Parish campaigns.</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+                      const key = `GLORY-NET-${rand}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-MONTHLY`;
+                      setRenewalLicenseKey(key);
+                      alert(`Generated Key: ${key}. Placed into the PROLONG input above! Click "PROLONG" to activate.`);
+                    }}
+                    className="mt-4 text-[9px] font-black uppercase text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-500 text-left cursor-pointer"
+                  >
+                    Generate Monthly Key &rarr;
+                  </button>
+                </div>
+
+                {/* Quarterly Plan */}
+                <div className="p-4 rounded-2xl bg-white dark:bg-gray-950 border border-slate-200 dark:border-gray-850 flex flex-col justify-between hover:shadow-md transition">
+                  <div>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] uppercase font-black bg-purple-500/10 text-purple-600 dark:text-purple-400">Quarterly</span>
+                    <h5 className="text-xs font-extrabold text-slate-800 dark:text-white mt-2">Quarterly Plan</h5>
+                    <p className="text-[9px] text-gray-400 dark:text-gray-500 mt-1 font-semibold">Valid for 90 Days. Generous Parish plan mapping with priority database backup.</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+                      const key = `GLORY-NET-${rand}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-QUARTERLY`;
+                      setRenewalLicenseKey(key);
+                      alert(`Generated Key: ${key}. Placed into the PROLONG input above! Click "PROLONG" to activate.`);
+                    }}
+                    className="mt-4 text-[9px] font-black uppercase text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-500 text-left cursor-pointer"
+                  >
+                    Generate Quarterly Key &rarr;
+                  </button>
+                </div>
+
+                {/* Yearly Plan */}
+                <div className="p-4 rounded-2xl bg-white dark:bg-gray-950 border border-slate-200 dark:border-gray-850 flex flex-col justify-between hover:shadow-md transition">
+                  <div>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] uppercase font-black bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Yearly</span>
+                    <h5 className="text-xs font-extrabold text-slate-800 dark:text-white mt-2">Yearly Plan</h5>
+                    <p className="text-[9px] text-gray-400 dark:text-gray-500 mt-1 font-semibold">Valid for 365 Days. Premium annual contract covering all ministerial segments.</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+                      const key = `GLORY-NET-${rand}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-YEARLY`;
+                      setRenewalLicenseKey(key);
+                      alert(`Generated Key: ${key}. Placed into the PROLONG input above! Click "PROLONG" to activate.`);
+                    }}
+                    className="mt-4 text-[9px] font-black uppercase text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-500 text-left cursor-pointer"
+                  >
+                    Generate Yearly Key &rarr;
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Form for Creating Admin Account */}
           {isAddingAdminUser && (
             <motion.div
@@ -3247,6 +3386,21 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     <option value="HOD">HOD</option>
                   </select>
                 </div>
+                {adminFormRole !== 'SuperAdmin' && (
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Department Unit Focus</label>
+                    <select
+                      value={adminFormDept}
+                      onChange={e => setAdminFormDept(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-955 dark:border-gray-700 text-slate-900 dark:text-white text-xs cursor-pointer"
+                    >
+                      <option value="None">None (Full Access - All Departments)</option>
+                      {MINISTRY_UNITS.map(unit => (
+                        <option key={unit} value={unit}>{unit}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="md:col-span-4 pt-1 flex justify-end">
                   <button
                     type="submit"
