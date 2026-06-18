@@ -220,7 +220,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [memberQrCodeDataUrl, setMemberQrCodeDataUrl] = useState<string>('');
 
   // Active Main Navigation Tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit' | 'whatsapp_gateway'>('dashboard');
   
   // Active Database Record Segment Selection
   const [activeSegment, setActiveSegment] = useState<RecordSegment>('workers');
@@ -306,6 +306,12 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [brandFooter, setBrandFooter] = useState('');
   const [isSavingBranding, setIsSavingBranding] = useState(false);
 
+  // --- Meta WhatsApp Cloud API States ---
+  const [whatsappApiUrl, setWhatsappApiUrl] = useState('');
+  const [whatsappApiToken, setWhatsappApiToken] = useState('');
+  const [whatsappOfficialNumber, setWhatsappOfficialNumber] = useState('');
+  const [isSavingWhatsappSettings, setIsSavingWhatsappSettings] = useState(false);
+
   // Worker Reassignment save state
   const [updatingAssignments, setUpdatingAssignments] = useState(false);
 
@@ -383,6 +389,18 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             setBrandFooter(parsed.footerText || '');
           } catch (brErr) {}
         }
+      }
+
+      // Load WhatsApp Gateway settings
+      try {
+        const waCfg = await safeFetchJson('/api/whatsapp-settings');
+        if (waCfg) {
+          setWhatsappApiUrl(waCfg.apiUrl || '');
+          setWhatsappApiToken(waCfg.apiToken || '');
+          setWhatsappOfficialNumber(waCfg.officialNumber || '');
+        }
+      } catch (e) {
+        console.warn('Failed to load WhatsApp settings from API, using defaults:', e);
       }
 
       // Load System License from API or local fallback
@@ -870,6 +888,34 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       alert("Failed to save branding preferences: " + err.message);
     } finally {
       setIsSavingBranding(false);
+    }
+  };
+
+  // Save Meta WhatsApp Gateway Settings Handler
+  const handleSaveWhatsappSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingWhatsappSettings(true);
+    try {
+      const payload = {
+        apiUrl: whatsappApiUrl.trim(),
+        apiToken: whatsappApiToken.trim(),
+        officialNumber: whatsappOfficialNumber.trim()
+      };
+      const result = await safeFetchJson('/api/whatsapp-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (result && result.success) {
+        addAuditLog("Save WhatsApp Config", "Updated Meta WhatsApp Cloud API credentials.");
+        alert("Meta WhatsApp Cloud API credentials and transmitter configurations saved successfully! They are compiled into the background scheduler.");
+      } else {
+        throw new Error(result?.error || "Unknown server validation error");
+      }
+    } catch (err: any) {
+      alert("Failed to update credentials settings: " + err.message);
+    } finally {
+      setIsSavingWhatsappSettings(false);
     }
   };
 
@@ -2132,6 +2178,18 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         >
           <Settings className="w-4 h-4" />
           Branding Setup
+        </button>
+
+        <button
+          onClick={() => setActiveTab('whatsapp_gateway')}
+          className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'whatsapp_gateway'
+            ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+            : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <Send className="w-4 h-4" />
+          WhatsApp Gateway
         </button>
 
         <button
@@ -3660,6 +3718,120 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                 {/* Simulated Footer */}
                 <div className="p-3 bg-white dark:bg-gray-900 border-t border-gray-100 dark:border-gray-855 text-center text-[8px] text-slate-400 font-bold truncate">
                   {brandFooter || "© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- TAB: METADATA WHATSAPP CLOUD API SETUP GATEWAY --- */}
+      {activeTab === 'whatsapp_gateway' && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight">Meta WhatsApp Cloud API Gateway</h2>
+            <span className="text-[10px] text-gray-400 uppercase font-bold">Configure core developer credentials used by the automated sweep scheduler to distribute automatic daily text blessings</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="md:col-span-2 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-6 rounded-3xl shadow-xl space-y-6">
+              <form onSubmit={handleSaveWhatsappSettings} className="space-y-4 text-xs font-semibold">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    WhatsApp API endpoint gateway (URL)
+                  </label>
+                  <input
+                    type="url"
+                    value={whatsappApiUrl}
+                    onChange={(e) => setWhatsappApiUrl(e.target.value)}
+                    placeholder="https://graph.facebook.com/v17.0/YOUR_PHONE_NUMBER_ID/messages"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20"
+                    required
+                  />
+                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
+                    Retrieve your Phone Number ID from the Meta Developers Portal Console under WhatsApp &rarr; API Setup.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Permanent access Token / bearer key
+                  </label>
+                  <textarea
+                    value={whatsappApiToken}
+                    onChange={(e) => setWhatsappApiToken(e.target.value)}
+                    placeholder="EAAZGBA7647V8BA..."
+                    rows={4}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20 resize-none"
+                    required
+                  />
+                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
+                    Use a Permanent System User Token generated inside Meta Business Manager to guarantee long-term auto-scheduler stability without key expiration.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Official church WhatsApp registered (transmitter ID number / labels)
+                  </label>
+                  <input
+                    type="text"
+                    value={whatsappOfficialNumber}
+                    onChange={(e) => setWhatsappOfficialNumber(e.target.value)}
+                    placeholder="+234 902 995 7453"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20"
+                    required
+                  />
+                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
+                    Enter the registered transmitter telephone number displaying to external parish recipients.
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 dark:border-white/5 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={isSavingWhatsappSettings}
+                    className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-amber-500 dark:hover:bg-amber-600 text-white dark:text-slate-950 text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer transition shadow-lg"
+                  >
+                    {isSavingWhatsappSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4.5 h-4.5" />}
+                    Save API credentials
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Quick Helper Reference Sidebar Card */}
+            <div className="bg-slate-50 dark:bg-gray-900 border border-gray-200/60 dark:border-gray-800 p-6 rounded-3xl space-y-4">
+              <div className="inline-flex items-center justify-center w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-450">
+                <Send className="w-5 h-5" />
+              </div>
+              <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Automated Dispatcher Guide</h3>
+              
+              <div className="space-y-3.5 text-[10px] text-gray-550 dark:text-gray-400 leading-relaxed font-semibold">
+                <p>
+                  The system's background scheduler reviews member registries in real-time. Matches found daily trigger a REST hook invoking the Meta Cloud API.
+                </p>
+                
+                <div className="p-3 bg-white dark:bg-gray-950 border border-slate-100 dark:border-gray-850 rounded-xl space-y-1">
+                  <span className="text-[9px] uppercase font-black text-indigo-500">Scheduler Cycle</span>
+                  <p className="text-[9px] opacity-80">
+                    Runs automatically every 12 hours on server cycle, plus instantly upon boot & force sweep.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-white dark:bg-gray-950 border border-slate-100 dark:border-gray-855 rounded-xl space-y-1">
+                  <span className="text-[9px] uppercase font-black text-emerald-500">Sandbox Safety Mode</span>
+                  <p className="text-[9px] opacity-80">
+                    Use the preset token ending with <span className="font-mono">...</span> to simulate successful deliveries on pre-production sandboxes without charging credits.
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-slate-250 dark:border-gray-800">
+                  <span className="block text-[8px] uppercase tracking-widest text-slate-400 mb-1">Database Connectivity Status</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+                    <span className="text-[9px] font-bold text-emerald-600">CONNECTED & HEALTHY</span>
+                  </div>
                 </div>
               </div>
             </div>

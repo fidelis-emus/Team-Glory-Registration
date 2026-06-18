@@ -459,9 +459,21 @@ async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, mess
     formattedPhone = '234' + formattedPhone;
   }
 
-  const waEndpoint = process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v17.0/105315582563388/messages';
-  const waToken = process.env.WHATSAPP_API_TOKEN || 'EAAZGBA7647V8BA...';
-  const officialSender = '+234 902 995 7453';
+  let waEndpoint = process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v17.0/105315582563388/messages';
+  let waToken = process.env.WHATSAPP_API_TOKEN || 'EAAZGBA7647V8BA...';
+  let officialSender = '+234 902 995 7453';
+
+  try {
+    const list = await getCollectionDocs('whatsapp_config');
+    const mainConfig = list.find((x: any) => x.id === 'main');
+    if (mainConfig) {
+      if (mainConfig.apiUrl) waEndpoint = mainConfig.apiUrl;
+      if (mainConfig.apiToken) waToken = mainConfig.apiToken;
+      if (mainConfig.officialNumber) officialSender = mainConfig.officialNumber;
+    }
+  } catch (err) {
+    console.warn('[WhatsApp Config] Failed to fetch settings from DB, using default environment configs:', err);
+  }
 
   // If the token is the default test placeholder, treat it as a simulated sandbox success
   const isPlaceholderToken = waToken.startsWith('EAAZGBA7647V8BA') || waToken.includes('...');
@@ -641,6 +653,42 @@ serverApp.post('/api/branding', async (req, res) => {
     const mainPayload = { ...docData, id: 'main', _id: 'main' };
     await saveCollectionDoc('branding_config', mainPayload);
     res.json({ success: true, branding: mainPayload });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Meta WhatsApp Cloud API credentials configuration routing
+serverApp.get('/api/whatsapp-settings', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('whatsapp_config');
+    const mainConfig = list.find((x: any) => x.id === 'main');
+    if (mainConfig) {
+      return res.json(mainConfig);
+    }
+    // Return standard defaults if none configured yet
+    res.json({
+      apiUrl: 'https://graph.facebook.com/v17.0/105315582563388/messages',
+      apiToken: 'EAAZGBA7647V8BA...',
+      officialNumber: '+234 902 995 7453'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+serverApp.post('/api/whatsapp-settings', async (req, res) => {
+  try {
+    const docData = req.body;
+    const mainPayload = { 
+      apiUrl: docData.apiUrl,
+      apiToken: docData.apiToken,
+      officialNumber: docData.officialNumber,
+      id: 'main', 
+      _id: 'main' 
+    };
+    await saveCollectionDoc('whatsapp_config', mainPayload);
+    res.json({ success: true, settings: mainPayload });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
