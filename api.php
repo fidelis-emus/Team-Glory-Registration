@@ -387,6 +387,45 @@ function handleBrandingRoute($db, $method) {
     }
 }
 
+// --- RECORDS DUP ENGINE ---
+function checkDuplicate($db, $fullName, $email, $phoneNumber, $excludeId = null) {
+    $cleanName = trim(strtolower($fullName ?? ''));
+    if (empty($cleanName)) {
+        return null;
+    }
+    
+    $cleanEmail = trim(strtolower($email ?? ''));
+    $cleanPhone = trim(strtolower($phoneNumber ?? ''));
+
+    $registrationSegments = [
+        'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
+        'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+    ];
+
+    foreach ($registrationSegments as $seg) {
+        $query = "SELECT id, fullName, email, phoneNumber FROM $seg WHERE LOWER(fullName) = ?";
+        $params = [$cleanName];
+
+        if (!empty($excludeId)) {
+            $query .= " AND id != ?";
+            $params[] = $excludeId;
+        }
+
+        try {
+            $stmt = $db->prepare($query);
+            $stmt->execute($params);
+            $records = $stmt->fetchAll();
+            if (!empty($records)) {
+                return $records[0];
+            }
+        } catch (PDOException $e) {
+            // Table might not exist or some column missing
+        }
+    }
+
+    return null;
+}
+
 // RECORDS RESOURCE CONTROLLER (DYNAMIC SEGMENTS)
 function handleRecordsRoute($db, $method, $segment, $id = null) {
     // Validate segment availability
@@ -482,12 +521,31 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
     } elseif ($method === 'POST') {
         $body = getRequestBody();
         validateRequest($body, ['fullName', 'gender']);
-        
+
+        $registrationSegments = [
+            'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
+            'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+        ];
+
         $newId = "REC" . rand(1000, 9999) . date('is');
         if (isset($body['id']) && !empty($body['id'])) {
             $newId = $body['id'];
         }
 
+        if (in_array($segment, $registrationSegments)) {
+            $email = $body['email'] ?? '';
+            $phoneNumber = $body['phoneNumber'] ?? '';
+            $dup = checkDuplicate($db, $body['fullName'], $email, $phoneNumber, $newId);
+            if ($dup) {
+                http_response_code(200);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "This person already exists in the database. You cannot register the same person twice."
+                ]);
+                exit(0);
+            }
+        }
+        
         // Setup structure based on segment schemas
         $fields = ['id', 'fullName', 'gender', 'createdAt'];
         $values = [$newId, $body['fullName'], $body['gender'], date('c')];
@@ -511,12 +569,46 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
         $stmt = $db->prepare($queryStr);
         $stmt->execute($values);
 
-        successResponse(["success" => true, "id" => $newId, "message" => "Record registered in $segment."], 201);
+        if (in_array($segment, $registrationSegments)) {
+            successResponse([
+                "success" => true,
+                "id" => $newId,
+                "message" => "Registration Successful!\n\nThank you for registering to serve with TEAM GLORY.\n\nYour application has been received and is being reviewed. A Cluster Coordinator will contact you via WhatsApp with your placement details and next steps.\n\nWe look forward to serving alongside you.\n\n🤝 You may now close this window."
+            ], 201);
+        } else {
+            successResponse(["success" => true, "id" => $newId, "message" => "Record registered in $segment."], 201);
+        }
     } elseif ($method === 'PUT') {
         if (!$id) {
             errorResponse("Missing resource ID parameter in path for PUT", 400);
         }
         $body = getRequestBody();
+
+        $registrationSegments = [
+            'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
+            'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+        ];
+
+        if (in_array($segment, $registrationSegments)) {
+            // Fetch current record
+            $stmt = $db->prepare("SELECT * FROM $segment WHERE id = ?");
+            $stmt->execute([$id]);
+            $currentRecord = $stmt->fetch();
+
+            $fullName = isset($body['fullName']) ? $body['fullName'] : ($currentRecord ? $currentRecord['fullName'] : '');
+            $email = isset($body['email']) ? $body['email'] : ($currentRecord ? $currentRecord['email'] : '');
+            $phoneNumber = isset($body['phoneNumber']) ? $body['phoneNumber'] : ($currentRecord ? $currentRecord['phoneNumber'] : '');
+
+            $dup = checkDuplicate($db, $fullName, $email, $phoneNumber, $id);
+            if ($dup) {
+                http_response_code(200);
+                echo json_encode([
+                    "success" => false,
+                    "message" => "This person already exists in the database. You cannot register the same person twice."
+                ]);
+                exit(0);
+            }
+        }
         
         $sets = [];
         $values = [];

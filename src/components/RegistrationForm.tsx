@@ -157,6 +157,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [completedRecordId, setCompletedRecordId] = useState<string>('');
   const [copiedId, setCopiedId] = useState(false);
+  const [backendSuccessMessage, setBackendSuccessMessage] = useState<string>('');
 
   // --- FORM DATA FIELDS ---
   // Personal Info (Page 2)
@@ -298,84 +299,11 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
     return `${prefix}${padding}`;
   };
 
-  // Global Check for duplicate entries
+  // Global Check for duplicate entries (delegated to backend in accordance with requirements)
   const triggerDuplicateCheck = async (): Promise<boolean> => {
     setErrorMessage(null);
-    setCheckingDuplicates(true);
-    const cleanName = fullName.trim();
-
-    // Check localStorage mirror first to be fast
-    const localKeys = [
-      'team_glory_first_timers',
-      'team_glory_first_timer_workers',
-      'team_glory_members',
-      'team_glory_member_workers',
-      'team_glory_workers',
-      'team_glory_training_registrations',
-      'team_glory_house_fellowship_registrations',
-      'team_glory_interest_groups',
-      'team_glory_members' // compat mirror
-    ];
-
-    for (const key of localKeys) {
-      try {
-        const stored = localStorage.getItem(key);
-        if (stored) {
-          const arr = JSON.parse(stored);
-          if (Array.isArray(arr)) {
-            const match = arr.find((item: any) => {
-              const itemName = (item.fullName || '').toLowerCase().trim();
-              return itemName === cleanName.toLowerCase();
-            });
-
-            if (match) {
-              setErrorMessage("This personal information already exists in our database. You cannot register the same person twice.");
-              setCheckingDuplicates(false);
-              return true; // Is duplicate
-            }
-          }
-        }
-      } catch (err) {
-        console.warn("Local storage check error:", err);
-      }
-    }
-
-    const collectionsToCheck = [
-      'first_timers',
-      'first_timer_workers',
-      'members',
-      'member_workers',
-      'workers',
-      'training_registrations',
-      'house_fellowship_registrations',
-      'interest_groups'
-    ];
-
-    try {
-      for (const collName of collectionsToCheck) {
-        try {
-          const arr = await safeFetchJson(`/api/records/${collName}`);
-          if (Array.isArray(arr)) {
-            const match = arr.find((item: any) => {
-              const itemName = (item.fullName || '').toLowerCase().trim();
-              return itemName === cleanName.toLowerCase();
-            });
-            if (match) {
-              setErrorMessage("This personal information already exists in database. You cannot register the same person twice.");
-              setCheckingDuplicates(false);
-              return true;
-            }
-          }
-        } catch (e) {
-          console.warn(`Query on database collection ${collName} failed:`, e);
-        }
-      }
-    } catch (glErr) {
-      console.warn("Global duplicate check failed, proceeding safely:", glErr);
-    }
-
     setCheckingDuplicates(false);
-    return false; // No duplicate detected
+    return false; // Delegated completely to server-side check.
   };
 
   // Validate Step 1 (Personal Info)
@@ -549,13 +477,31 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
 
   // Save registration helper to route dynamically via backend API endpoints
   const saveRegistrationRecord = async (collectionName: string, data: any) => {
-    return await safeFetchJson(`/api/records/${collectionName}`, {
+    const res = await safeFetchJson(`/api/records/${collectionName}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(data)
     });
+
+    if (res && res.success === false) {
+      const errorMsg = res.message || "This person already exists in the database. You cannot register the same person twice.";
+      try {
+        window.alert(errorMsg);
+      } catch (e) {
+        console.warn("Iframe window.alert failed. Fallback UI is active.", e);
+      }
+      throw new Error(errorMsg);
+    }
+
+    if (res && res.success === true && res.message) {
+      setBackendSuccessMessage(res.message);
+    } else {
+      setBackendSuccessMessage('');
+    }
+
+    return res;
   };
 
   // Submit NO-Workforce (First Timer / Member)
@@ -2142,64 +2088,73 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
             )}
 
             {/* Custom SUCCESS Body Messages based on selected pathway rules */}
-            <div className="max-w-xl mx-auto text-xs sm:text-sm text-slate-600 dark:text-slate-350 leading-relaxed font-semibold space-y-4 my-5 p-4 rounded-2xl bg-white/30 dark:bg-slate-900/10 border border-slate-100/50 dark:border-white/5">
-              {/* Pathway 1: first_timer_workers, member_workers, workers */}
-              {(currPathway === 'first_timer_workers' || currPathway === 'member_workers' || currPathway === 'workers') && (
-                <p>
-                  Thank you for joining TEAM GLORY.<br /><br />
-                  Your information has been received and you will be connected to the appropriate groups and next steps.
-                  A coordinator may contact you with further details. Welcome to community, growth, and service.
-                </p>
-              )}
+            {backendSuccessMessage ? (
+              <div 
+                className="max-w-xl mx-auto text-left text-xs sm:text-sm text-slate-700 dark:text-slate-200 leading-relaxed font-bold space-y-4 my-5 p-6 rounded-2xl bg-white/40 dark:bg-slate-900/40 border border-emerald-500/20 shadow-xs"
+                style={{ whiteSpace: 'pre-line' }}
+              >
+                {backendSuccessMessage}
+              </div>
+            ) : (
+              <div className="max-w-xl mx-auto text-xs sm:text-sm text-slate-600 dark:text-slate-350 leading-relaxed font-semibold space-y-4 my-5 p-4 rounded-2xl bg-white/30 dark:bg-slate-900/10 border border-slate-100/50 dark:border-white/5">
+                {/* Pathway 1: first_timer_workers, member_workers, workers */}
+                {(currPathway === 'first_timer_workers' || currPathway === 'member_workers' || currPathway === 'workers') && (
+                  <p>
+                    Thank you for joining TEAM GLORY.<br /><br />
+                    Your information has been received and you will be connected to the appropriate groups and next steps.
+                    A coordinator may contact you with further details. Welcome to community, growth, and service.
+                  </p>
+                )}
 
-              {/* Pathway 2: first_timers */}
-              {currPathway === 'first_timers' && (
-                <p>
-                  Thank you for worshiping with us today.<br /><br />
-                  God bless you and have a great week.
-                  Your information has been saved successfully.<br /><br />
-                  A team member of the Follow-Up Department will reach out to you.
-                </p>
-              )}
+                {/* Pathway 2: first_timers */}
+                {currPathway === 'first_timers' && (
+                  <p>
+                    Thank you for worshiping with us today.<br /><br />
+                    God bless you and have a great week.
+                    Your information has been saved successfully.<br /><br />
+                    A team member of the Follow-Up Department will reach out to you.
+                  </p>
+                )}
 
-              {/* Pathway 3: members */}
-              {currPathway === 'members' && (
-                <p>
-                  Thank you for worshiping with us today.<br /><br />
-                  God bless you and have a great week.
-                  Your information has been saved successfully.<br /><br />
-                  A team member of the Follow-Up Department will reach out to you.
-                </p>
-              )}
+                {/* Pathway 3: members */}
+                {currPathway === 'members' && (
+                  <p>
+                    Thank you for worshiping with us today.<br /><br />
+                    God bless you and have a great week.
+                    Your information has been saved successfully.<br /><br />
+                    A team member of the Follow-Up Department will reach out to you.
+                  </p>
+                )}
 
-              {/* Pathway 4: training_registrations */}
-              {currPathway === 'training_registrations' && (
-                <p>
-                  Your interest in the selected training programme(s) has been received.<br /><br />
-                  A member of our team will contact you with details about upcoming classes and next steps.
-                  Thank you for your commitment to spiritual growth and discipleship.
-                </p>
-              )}
+                {/* Pathway 4: training_registrations */}
+                {currPathway === 'training_registrations' && (
+                  <p>
+                    Your interest in the selected training programme(s) has been received.<br /><br />
+                    A member of our team will contact you with details about upcoming classes and next steps.
+                    Thank you for your commitment to spiritual growth and discipleship.
+                  </p>
+                )}
 
-              {/* Pathway 5: house_fellowship_registrations */}
-              {currPathway === 'house_fellowship_registrations' && (
-                <p>
-                  Thank you for submitting your location details.<br /><br />
-                  You will be connected to the nearest House Fellowship in your area within Ikorodu.
-                  A coordinator will reach out to you shortly with your group details and meeting information.
-                  Welcome to a family near you. We are glad to have you connected.
-                </p>
-              )}
+                {/* Pathway 5: house_fellowship_registrations */}
+                {currPathway === 'house_fellowship_registrations' && (
+                  <p>
+                    Thank you for submitting your location details.<br /><br />
+                    You will be connected to the nearest House Fellowship in your area within Ikorodu.
+                    A coordinator will reach out to you shortly with your group details and meeting information.
+                    Welcome to a family near you. We are glad to have you connected.
+                  </p>
+                )}
 
-              {/* Pathway 6: interest_groups */}
-              {currPathway === 'interest_groups' && (
-                <p>
-                  Thank you for joining TEAM GLORY.<br /><br />
-                  Your information has been received and you will be connected to the appropriate groups and next steps.
-                  A coordinator may contact you with further details. Welcome to community, growth, and service.
-                </p>
-              )}
-            </div>
+                {/* Pathway 6: interest_groups */}
+                {currPathway === 'interest_groups' && (
+                  <p>
+                    Thank you for joining TEAM GLORY.<br /><br />
+                    Your information has been received and you will be connected to the appropriate groups and next steps.
+                    A coordinator may contact you with further details. Welcome to community, growth, and service.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="pt-6 border-t border-slate-205 dark:border-white/5 space-y-4">
               <button

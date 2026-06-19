@@ -705,12 +705,69 @@ serverApp.get('/api/records/:segment', async (req, res) => {
   }
 });
 
+// --- DUPLICATE RECOGNITION DATABASE REGISTRY ENGINE ---
+const REGISTRATION_SEGMENTS = [
+  'first_timers',
+  'first_timer_workers',
+  'members',
+  'member_workers',
+  'workers',
+  'training_registrations',
+  'house_fellowship_registrations',
+  'interest_groups'
+];
+
+async function checkDuplicateDoc(fullName: string, email: string, phoneNumber: string, excludeId?: string): Promise<any | null> {
+  const cleanName = (fullName || '').toLowerCase().trim();
+
+  if (!cleanName) return null;
+
+  for (const coll of REGISTRATION_SEGMENTS) {
+    const docs = await getCollectionDocs(coll);
+    if (!docs || !Array.isArray(docs)) continue;
+
+    for (const doc of docs) {
+      if (excludeId && doc.id === excludeId) {
+        continue;
+      }
+
+      const docName = (doc.fullName || '').toLowerCase().trim();
+
+      if (cleanName && docName === cleanName) {
+        return doc;
+      }
+    }
+  }
+
+  return null;
+}
+
 // POST Record to Segment
 serverApp.post('/api/records/:segment', async (req, res) => {
   const { segment } = req.params;
   const docData = req.body;
   try {
+    if (REGISTRATION_SEGMENTS.includes(segment)) {
+      const duplicate = await checkDuplicateDoc(docData.fullName, docData.email, docData.phoneNumber, docData.id);
+      if (duplicate) {
+        return res.json({
+          success: false,
+          message: "This person already exists in the database. You cannot register the same person twice."
+        });
+      }
+    }
+
     const saved = await saveCollectionDoc(segment, docData);
+
+    if (REGISTRATION_SEGMENTS.includes(segment)) {
+      return res.json({
+        success: true,
+        message: "Registration Successful!\n\nThank you for registering to serve with TEAM GLORY.\n\nYour application has been received and is being reviewed. A Cluster Coordinator will contact you via WhatsApp with your placement details and next steps.\n\nWe look forward to serving alongside you.\n\n🤝 You may now close this window.",
+        id: saved.id,
+        docData: saved
+      });
+    }
+
     res.json({ success: true, id: saved.id, docData: saved });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -722,6 +779,22 @@ serverApp.put('/api/records/:segment/:id', async (req, res) => {
   const { segment, id } = req.params;
   const updatedFields = req.body;
   try {
+    if (REGISTRATION_SEGMENTS.includes(segment)) {
+      const currentDocs = await getCollectionDocs(segment);
+      const currentDoc = currentDocs.find(d => d.id === id);
+      const fullName = updatedFields.fullName !== undefined ? updatedFields.fullName : (currentDoc ? currentDoc.fullName : '');
+      const email = updatedFields.email !== undefined ? updatedFields.email : (currentDoc ? currentDoc.email : '');
+      const phoneNumber = updatedFields.phoneNumber !== undefined ? updatedFields.phoneNumber : (currentDoc ? currentDoc.phoneNumber : '');
+
+      const duplicate = await checkDuplicateDoc(fullName, email, phoneNumber, id);
+      if (duplicate) {
+        return res.json({
+          success: false,
+          message: "This person already exists in the database. You cannot register the same person twice."
+        });
+      }
+    }
+
     await updateCollectionDoc(segment, id, updatedFields);
     res.json({ success: true });
   } catch (err: any) {
