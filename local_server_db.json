@@ -1,0 +1,30 @@
+{
+  "first_timers": [],
+  "first_timer_workers": [],
+  "members": [],
+  "member_workers": [],
+  "workers": [],
+  "training_registrations": [],
+  "house_fellowship_registrations": [],
+  "interest_groups": [],
+  "heads_of_departments": [],
+  "birthday_notifications": [],
+  "admins_accounts": [
+    {
+      "id": "admin_root",
+      "fullName": "System Administrator",
+      "email": "admin@teamglory.com",
+      "password": "admin123",
+      "role": "SuperAdmin",
+      "isFirstLogin": true,
+      "requiresPasswordReset": false,
+      "createdAt": "2026-06-19T06:48:52.074Z"
+    }
+  ],
+  "branding_config": {
+    "logoBase64": null,
+    "headerTitle": "RCCG HOUSE OF GLORY, YP2",
+    "headerSubtitle": "TEAM GLORY",
+    "footerText": "© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL"
+  }
+}

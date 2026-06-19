@@ -25,7 +25,7 @@ VALUES (
     'admin_root',
     'Super Administrator',
     'admin@teamglory.com',
-    'HouseOfGlory2026',
+    'admin123',
     'SuperAdmin',
     'None',
     1,
