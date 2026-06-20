@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS first_timers (
     secondUnit TEXT,
     assignedHodId TEXT,
     lastBirthdayBlessedYear INTEGER DEFAULT 0,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS first_timer_workers (
     secondUnit TEXT,
     assignedHodId TEXT,
     lastBirthdayBlessedYear INTEGER DEFAULT 0,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS members (
     secondUnit TEXT,
     assignedHodId TEXT,
     lastBirthdayBlessedYear INTEGER DEFAULT 0,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -95,6 +98,7 @@ CREATE TABLE IF NOT EXISTS member_workers (
     secondUnit TEXT,
     assignedHodId TEXT,
     lastBirthdayBlessedYear INTEGER DEFAULT 0,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -111,6 +115,7 @@ CREATE TABLE IF NOT EXISTS workers (
     secondUnit TEXT,
     assignedHodId TEXT,
     lastBirthdayBlessedYear INTEGER DEFAULT 0,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -124,6 +129,7 @@ CREATE TABLE IF NOT EXISTS training_registrations (
     whatsappNumber TEXT,
     dateOfBirth TEXT,
     trainingProgram TEXT,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -138,6 +144,7 @@ CREATE TABLE IF NOT EXISTS house_fellowship_registrations (
     dateOfBirth TEXT,
     areaNeighbourhood TEXT,
     closestLandmark TEXT,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 
@@ -151,6 +158,7 @@ CREATE TABLE IF NOT EXISTS interest_groups (
     whatsappNumber TEXT,
     dateOfBirth TEXT,
     activeInterests TEXT,
+    occupation TEXT,
     createdAt TEXT NOT NULL
 );
 

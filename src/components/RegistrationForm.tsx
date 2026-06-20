@@ -181,6 +181,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
   };
   const [maritalStatus, setMaritalStatus] = useState<'Single' | 'Married' | 'Divorced' | 'Widowed' | ''>('');
   const [residentialAddress, setResidentialAddress] = useState('');
+  const [occupation, setOccupation] = useState('');
 
   // Workforce Form fields (7 sections)
   // Section 1: Church Info
@@ -335,6 +336,10 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
       setErrorMessage("Please enter your Residential Address");
       return false;
     }
+    if (!occupation.trim()) {
+      setErrorMessage("Please enter your Occupation");
+      return false;
+    }
     return true;
   };
 
@@ -457,6 +462,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
       dateOfBirth,
       maritalStatus: maritalStatus as 'Single' | 'Married' | 'Divorced' | 'Widowed',
       address: residentialAddress.trim(),
+      occupation: occupation.trim(),
       createdAt: nowIso,
       updatedAt: nowIso,
       registrationDate: todayStr
@@ -997,6 +1003,18 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
                     <option value="Widowed">Widowed</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1.5">Occupation / Profession <span className="text-red-500">*</span></label>
+                <input 
+                  type="text"
+                  value={occupation}
+                  onChange={e => setOccupation(e.target.value)}
+                  placeholder="e.g. Software Engineer, Trader, Teacher, Student, Civil Servant"
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none text-sm transition-all"
+                  required
+                />
               </div>
 
               <div>
@@ -2181,6 +2199,7 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
                     setDobDay('');
                     setMaritalStatus('');
                     setResidentialAddress('');
+                    setOccupation('');
                     setChurchDuration('');
                     setChurchMember(null);
                     setHouseFellowshipStatus(null);

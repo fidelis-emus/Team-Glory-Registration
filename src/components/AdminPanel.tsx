@@ -5417,6 +5417,10 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     <p className="mt-0.5">{selectedRecord.maritalStatus || 'Single'}</p>
                   </div>
                   <div>
+                    <p className="text-[10px] text-gray-400">Occupation / Profession</p>
+                    <p className="mt-0.5 font-semibold text-slate-800 dark:text-gray-200">{selectedRecord.occupation || 'Not specified'}</p>
+                  </div>
+                  <div>
                     <p className="text-[10px] text-gray-400">Database Source Collection</p>
                     <p className="mt-0.5 text-amber-500 font-bold tracking-wide uppercase text-[10.5px]">[{activeSegment}]</p>
                   </div>

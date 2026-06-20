@@ -177,6 +177,7 @@ function initializeDatabase($db) {
             secondUnit TEXT,
             assignedHodId TEXT,
             lastBirthdayBlessedYear INTEGER DEFAULT 0,
+            occupation TEXT,
             createdAt TEXT NOT NULL
         )");
     }
@@ -191,6 +192,7 @@ function initializeDatabase($db) {
         whatsappNumber TEXT,
         dateOfBirth TEXT,
         trainingProgram TEXT,
+        occupation TEXT,
         createdAt TEXT NOT NULL
     )");
 
@@ -205,6 +207,7 @@ function initializeDatabase($db) {
         dateOfBirth TEXT,
         areaNeighbourhood TEXT,
         closestLandmark TEXT,
+        occupation TEXT,
         createdAt TEXT NOT NULL
     )");
 
@@ -218,8 +221,22 @@ function initializeDatabase($db) {
         whatsappNumber TEXT,
         dateOfBirth TEXT,
         activeInterests TEXT,
+        occupation TEXT,
         createdAt TEXT NOT NULL
     )");
+
+    // 5b. Run safe migrations to add occupation to any pre-existing SQLite databases
+    $upgradeTables = [
+        'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
+        'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+    ];
+    foreach ($upgradeTables as $ut) {
+        try {
+            @$db->exec("ALTER TABLE $ut ADD COLUMN occupation TEXT");
+        } catch (Exception $migrationError) {
+            // column already exists, safely catch and ignore block
+        }
+    }
 
     // 6. heads_of_departments (HOD leader registry)
     $db->exec("CREATE TABLE IF NOT EXISTS heads_of_departments (
@@ -454,6 +471,9 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
             if (!$item) {
                 errorResponse("Record not found in segment $segment with ID: $id", 404);
             }
+            if (isset($item['residentialAddress'])) {
+                $item['address'] = $item['residentialAddress'];
+            }
             successResponse($item);
         } else {
             // GET list with pagination, search, sorting and custom filters
@@ -516,6 +536,12 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
             $listStmt->bindValue(':offset', $offset, PDO::PARAM_INT);
             $listStmt->execute();
             $records = $listStmt->fetchAll();
+            foreach ($records as &$rec) {
+                if (isset($rec['residentialAddress'])) {
+                    $rec['address'] = $rec['residentialAddress'];
+                }
+            }
+            unset($rec);
 
             successResponse([
                 "records" => $records,
@@ -529,6 +555,9 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
         }
     } elseif ($method === 'POST') {
         $body = getRequestBody();
+        if (isset($body['address'])) {
+            $body['residentialAddress'] = $body['address'];
+        }
         validateRequest($body, ['fullName', 'gender']);
 
         $registrationSegments = [
@@ -562,7 +591,7 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
         $optionalKeys = [
             'email', 'phoneNumber', 'whatsappNumber', 'dateOfBirth', 'residentialAddress',
             'firstUnit', 'secondUnit', 'assignedHodId', 'trainingProgram', 'areaNeighbourhood',
-            'closestLandmark', 'activeInterests', 'lastBirthdayBlessedYear'
+            'closestLandmark', 'activeInterests', 'lastBirthdayBlessedYear', 'occupation'
         ];
 
         foreach ($optionalKeys as $key) {
@@ -592,6 +621,9 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
             errorResponse("Missing resource ID parameter in path for PUT", 400);
         }
         $body = getRequestBody();
+        if (isset($body['address'])) {
+            $body['residentialAddress'] = $body['address'];
+        }
 
         $registrationSegments = [
             'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',

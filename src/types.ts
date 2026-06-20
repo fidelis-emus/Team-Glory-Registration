@@ -8,6 +8,7 @@ export interface BaseRegistration {
   dateOfBirth: string;
   maritalStatus: 'Single' | 'Married' | 'Divorced' | 'Widowed';
   address: string;
+  occupation?: string;
   createdAt: string; // ISO String
   updatedAt: string; // ISO String
 }
