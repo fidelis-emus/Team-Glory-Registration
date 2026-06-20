@@ -1081,6 +1081,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     else if (maritalStatusRaw.includes('widow')) maritalStatus = 'Widowed';
 
     const address = getVal(['address', 'residentialaddress', 'homeaddress', 'placeofresidence', 'location'], 'N/A');
+    const occupation = getVal(['occupation', 'profession', 'job', 'work', 'employment', 'career'], 'Not specified');
 
     const baseRecord: any = {
       id: getVal(['id', 'uuid', 'recordid'], 'import_' + Math.random().toString(36).substring(2, 10)),
@@ -1092,6 +1093,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       dateOfBirth: dob,
       maritalStatus,
       address,
+      occupation,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -2343,15 +2345,15 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     // Build headers based on segment
     let headers: string[] = [];
     if (['first_timer_workers', 'member_workers', 'workers'].includes(activeSegment)) {
-      headers = ["Member ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Choice 1 Department", "Choice 2 Department", "WIT Status", "HOD ID", "Join Date"];
+      headers = ["Member ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Occupation", "Choice 1 Department", "Choice 2 Department", "WIT Status", "HOD ID", "Join Date"];
     } else if (activeSegment === 'training_registrations') {
-      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Selected Program", "Registration Timestamp"];
+      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Occupation", "Selected Program", "Registration Timestamp"];
     } else if (activeSegment === 'house_fellowship_registrations') {
-      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Neighbourhood", "Landmark", "Registration Timestamp"];
+      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Occupation", "Neighbourhood", "Landmark", "Registration Timestamp"];
     } else if (activeSegment === 'interest_groups') {
-      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Selected Interests", "Registration Timestamp"];
+      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Occupation", "Selected Interests", "Registration Timestamp"];
     } else {
-      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Address", "Registration Timestamp"];
+      headers = ["ID", "Full Name", "Gender", "Email", "Phone", "WhatsApp", "Occupation", "Address", "Registration Timestamp"];
     }
 
     const csvRows = [headers.join(",")];
@@ -2368,6 +2370,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           esc(rec.email),
           esc(rec.phoneNumber),
           esc(rec.whatsappNumber),
+          esc(rec.occupation),
           esc((rec as any).firstUnit),
           esc((rec as any).secondUnit),
           esc((rec as any).workersTrainingStatus),
@@ -2382,6 +2385,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           esc(rec.email),
           rec.phoneNumber,
           rec.whatsappNumber,
+          esc(rec.occupation),
           esc((rec as any).trainingProgram),
           esc(rec.createdAt)
         ];
@@ -2393,6 +2397,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           esc(rec.email),
           rec.phoneNumber,
           rec.whatsappNumber,
+          esc(rec.occupation),
           esc((rec as any).neighbourhood),
           esc((rec as any).landmark),
           esc(rec.createdAt)
@@ -2406,6 +2411,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           esc(rec.email),
           rec.phoneNumber,
           rec.whatsappNumber,
+          esc(rec.occupation),
           esc(groups),
           esc(rec.createdAt)
         ];
@@ -2417,6 +2423,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           esc(rec.email),
           rec.phoneNumber,
           rec.whatsappNumber,
+          esc(rec.occupation),
           esc((rec as any).address),
           esc(rec.createdAt)
         ];
@@ -4031,6 +4038,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     <th className="px-5 py-3">Phone</th>
                     <th className="px-5 py-3">Gender</th>
                     <th className="px-5 py-3">Birthday / Due</th>
+                    <th className="px-5 py-3">Occupation</th>
                     
                     {/* Dynamic Headers based on selected segment */}
                     {['first_timer_workers', 'member_workers', 'workers'].includes(activeSegment) ? (
@@ -4060,7 +4068,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                 <tbody className="divide-y divide-gray-150 dark:divide-gray-700/55">
                   {paginatedRecords.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-5 py-12 text-center text-slate-400 font-bold">
+                      <td colSpan={12} className="px-5 py-12 text-center text-slate-400 font-bold">
                         No registrations found inside {activeSegment} matching filters.
                       </td>
                     </tr>
@@ -4120,6 +4128,11 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                                 </div>
                               );
                             })()}
+                          </td>
+
+                          {/* Occupation */}
+                          <td className="px-5 py-3.5 font-semibold text-slate-800 dark:text-gray-200">
+                            {rec.occupation || <span className="text-gray-400 dark:text-gray-500 italic">Not specified</span>}
                           </td>
 
                           {/* Dynamic Cells */}
@@ -5013,23 +5026,23 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               {/* Expected Columns Box */}
               <div className="p-4 bg-slate-50 dark:bg-gray-900/50 rounded-2xl border border-slate-100 dark:border-gray-750 space-y-2">
                 <span className="text-[9px] uppercase font-bold text-gray-400 block tracking-widest">Expected & Mapped Column Fields</span>
-                <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-normal font-medium font-semibold">
+                <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-normal font-semibold">
                   The parser is flexible and maps headers of any casing (e.g., <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">Full Name</code>, <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">name</code>, <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">fullname</code> are all mapped to the database).
                 </p>
                 <div className="flex flex-wrap gap-1.5 pt-1.5">
-                  {importTarget === 'members' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address'].map(col => (
+                  {importTarget === 'members' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'workers' && ['fullName', 'phoneNumber', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'gender', 'email', 'maritalStatus', 'address'].map(col => (
+                  {importTarget === 'workers' && ['fullName', 'phoneNumber', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'gender', 'email', 'maritalStatus', 'address', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'house_fellowship_registrations' && ['fullName', 'phoneNumber', 'address', 'neighbourhood', 'landmark'].map(col => (
+                  {importTarget === 'house_fellowship_registrations' && ['fullName', 'phoneNumber', 'address', 'neighbourhood', 'landmark', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'interest_groups' && ['fullName', 'phoneNumber', 'selectedGroups', 'gender', 'email'].map(col => (
+                  {importTarget === 'interest_groups' && ['fullName', 'phoneNumber', 'selectedGroups', 'gender', 'email', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'training_registrations' && ['fullName', 'phoneNumber', 'trainingProgram', 'gender', 'email'].map(col => (
+                  {importTarget === 'training_registrations' && ['fullName', 'phoneNumber', 'trainingProgram', 'gender', 'email', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
                   {importTarget === 'heads_of_departments' && ['fullName', 'department', 'email', 'phoneNumber'].map(col => (
