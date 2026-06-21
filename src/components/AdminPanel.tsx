@@ -20,56 +20,116 @@ export function getBirthdayInfo(dob: string) {
   let day = -1;
   let dateLabel = dob;
 
-  const yyyymmddRegex = /^(\d{4})-(\d{2})-(\d{2})$/;
   const monthNames = [
     'january', 'february', 'march', 'april', 'may', 'june',
     'july', 'august', 'september', 'october', 'november', 'december'
   ];
 
-  const dobLower = dob.trim().toLowerCase();
+  const dobLower = dob.trim().toLowerCase().replace(/\./g, '/');
 
-  if (yyyymmddRegex.test(dob)) {
-    const match = dob.match(yyyymmddRegex);
-    if (match) {
-      const mIdx = parseInt(match[2], 10) - 1;
-      const dNum = parseInt(match[3], 10);
-      month = mIdx;
-      day = dNum;
+  // 1. Is it an Excel serial date? (e.g. 44197, which translates to Dec 31, 2020)
+  const serial = Number(dobLower);
+  if (!isNaN(serial) && serial > 1 && serial < 100000) {
+    const excelEpoch = new Date(1899, 11, 30);
+    const convertedDate = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+    if (!isNaN(convertedDate.getTime())) {
+      month = convertedDate.getMonth();
+      day = convertedDate.getDate();
     }
-  } else {
-    // support slashes/skips/hyphens
-    const parts = dobLower.split(/[\s\/\-]+/).filter(Boolean);
-    if (parts.length >= 2) {
-      let first = parts[0];
-      let second = parts[1];
+  }
 
-      // Check if one of them is a month name
-      const mIdx1 = monthNames.findIndex(m => m === first || m.substring(0, 3) === first);
-      const mIdx2 = monthNames.findIndex(m => m === second || m.substring(0, 3) === second);
+  // 2. Try native Date parsing for ISO and standard string formats (ignore if string is purely numeric)
+  if (month === -1 || day === -1) {
+    const parsedDate = new Date(dob);
+    if (!isNaN(parsedDate.getTime()) && dob.length >= 3 && !/^\d+$/.test(dob.trim())) {
+      month = parsedDate.getMonth();
+      day = parsedDate.getDate();
+    }
+  }
 
-      if (mIdx1 !== -1) {
-        month = mIdx1;
-        day = parseInt(second, 10);
-      } else if (mIdx2 !== -1) {
-        month = mIdx2;
-        day = parseInt(first, 10);
-      } else {
-        // Both are numbers, parse as Month/Day
-        const mNum = parseInt(first, 10);
-        const dNum = parseInt(second, 10);
-        if (!isNaN(mNum) && !isNaN(dNum) && mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
-          month = mNum - 1;
-          day = dNum;
-        } else if (!isNaN(mNum) && !isNaN(dNum) && dNum >= 1 && dNum <= 12 && mNum >= 1 && mNum <= 31) {
-          month = dNum - 1;
-          day = mNum;
+  // 3. Robust manual splitting and matching
+  if (month === -1 || day === -1) {
+    // Clean string: replace suffixes like 1st, 2nd, 3rd, 4th
+    const cleanDob = dobLower
+      .replace(/(\d+)(st|nd|rd|th)/g, '$1')
+      .replace(/,/g, ' '); // replace commas with spaces
+    
+    const parts = cleanDob.split(/[\s\/\-]+/).filter(Boolean);
+
+    if (parts.length >= 1) {
+      let monthIdx = -1;
+      let dayVal = -1;
+
+      // Check if one of parts is a text month name
+      const monthNameIdx = parts.findIndex(part => 
+        monthNames.some(m => m === part || m.substring(0, 3) === part)
+      );
+
+      if (monthNameIdx !== -1) {
+        const monthName = parts[monthNameIdx];
+        monthIdx = monthNames.findIndex(m => m === monthName || m.substring(0, 3) === monthName);
+        
+        // Find other parts for the day
+        const otherParts = parts.filter((_, idx) => idx !== monthNameIdx);
+        for (const p of otherParts) {
+          const d = parseInt(p, 10);
+          if (!isNaN(d) && d >= 1 && d <= 31) {
+            dayVal = d;
+            break;
+          }
         }
+      } else {
+        // All parts are numerical e.g., "12/10/1987", "10/12/1987", "1987/10/12"
+        const numParts = parts.map(p => parseInt(p, 10)).filter(num => !isNaN(num));
+        
+        if (numParts.length >= 2) {
+          // Identify any part that represents the 4-digit year or 2-digit year
+          let yearIdx = -1;
+          if (numParts.length === 3) {
+            // Find 4 digit year first
+            yearIdx = numParts.findIndex(n => n >= 100);
+            if (yearIdx === -1) {
+              if (numParts[2] >= 1 && numParts[2] <= 99) {
+                yearIdx = 2; // e.g. 12/10/95 -> year is 95
+              } else if (numParts[0] >= 50 && numParts[0] <= 99) {
+                yearIdx = 0; // e.g. 95/10/12
+              }
+            }
+          }
+
+          const activeParts = yearIdx !== -1 ? numParts.filter((_, idx) => idx !== yearIdx) : numParts;
+
+          if (activeParts.length >= 2) {
+            const first = activeParts[0];
+            const second = activeParts[1];
+
+            // Resolve ambiguity between first and second part
+            if (first > 12 && first <= 31 && second >= 1 && second <= 12) {
+              // DD/MM format
+              monthIdx = second - 1;
+              dayVal = first;
+            } else if (second > 12 && second <= 31 && first >= 1 && first <= 12) {
+              // MM/DD format
+              monthIdx = first - 1;
+              dayVal = second;
+            } else if (first >= 1 && first <= 12 && second >= 1 && second <= 31) {
+              // Default assumption: MM/DD
+              monthIdx = first - 1;
+              dayVal = second;
+            }
+          }
+        }
+      }
+
+      if (monthIdx !== -1 && dayVal !== -1) {
+        month = monthIdx;
+        day = dayVal;
       }
     }
   }
 
   if (month === -1 || day === -1) {
-    return { formatted: dob, daysUntil: 9999, isToday: false, isTomorrow: false, dateLabel: dob };
+    return { formatted: dob, daysUntil: 9999, isToday: false, isTomorrow: false, dateLabel: dob, month, day };
   }
 
   const fullMonthName = monthNames[month].charAt(0).toUpperCase() + monthNames[month].slice(1);
@@ -1087,7 +1147,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     let genderRaw = getVal(['gender', 'sex', 'male/female'], 'Male').toLowerCase();
     const gender = (genderRaw.startsWith('f') || genderRaw.includes('female')) ? 'Female' : 'Male';
 
-    const dob = getVal(['dateofbirth', 'dob', 'birthday', 'birthdate'], '1995-01-01');
+    const dob = getVal(['dateofbirth', 'dob', 'birthday', 'birthdate'], '');
     const maritalStatusRaw = getVal(['maritalstatus', 'marital', 'status'], 'Single').toLowerCase();
     let maritalStatus: 'Single' | 'Married' | 'Divorced' | 'Widowed' = 'Single';
     if (maritalStatusRaw.includes('married')) maritalStatus = 'Married';
