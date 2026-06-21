@@ -191,7 +191,8 @@ type RecordSegment =
   | 'workers'
   | 'training_registrations'
   | 'house_fellowship_registrations'
-  | 'interest_groups';
+  | 'interest_groups'
+  | 'children_department';
 
 export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: AdminPanelProps) {
   // Authentication states
@@ -219,6 +220,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [trainingRegs, setTrainingRegs] = useState<TrainingRegistration[]>([]);
   const [hfRegs, setHfRegs] = useState<HouseFellowshipRegistration[]>([]);
   const [interestGroups, setInterestGroups] = useState<InterestGroupsRegistration[]>([]);
+  const [childrenDepartment, setChildrenDepartment] = useState<any[]>([]);
 
   // Heads of Departments Registry & Audit log states
   const [hods, setHods] = useState<HeadOfDepartment[]>([]);
@@ -321,7 +323,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [isSavingWhatsappSettings, setIsSavingWhatsappSettings] = useState(false);
 
   // --- Dynamic CSV/JSON Import Wizard States ---
-  const [importTarget, setImportTarget] = useState<'members' | 'workers' | 'house_fellowship_registrations' | 'interest_groups' | 'training_registrations' | 'heads_of_departments'>('members');
+  const [importTarget, setImportTarget] = useState<'members' | 'workers' | 'house_fellowship_registrations' | 'interest_groups' | 'training_registrations' | 'heads_of_departments' | 'children_department'>('members');
   const [importRawText, setImportRawText] = useState('');
   const [importParsedData, setImportParsedData] = useState<any[]>([]);
   const [isDraggingImportFile, setIsDraggingImportFile] = useState(false);
@@ -475,6 +477,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       const tr = await getSegmentData('training_registrations'); setTrainingRegs(tr);
       const hf = await getSegmentData('house_fellowship_registrations'); setHfRegs(hf);
       const ig = await getSegmentData('interest_groups'); setInterestGroups(ig);
+      const ch = await getSegmentData('children_department'); setChildrenDepartment(ch);
 
       try {
         const hodsList = await safeFetchJson('/api/hods');
@@ -1269,7 +1272,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       house_fellowship_registrations: 'Fellowship Placements',
       interest_groups: 'Interest Groups',
       training_registrations: 'Training Registrations',
-      heads_of_departments: 'Heads of Departments'
+      heads_of_departments: 'Heads of Departments',
+      children_department: "Children's Department"
     };
 
     const targetLabel = targetLabelMap[collectionName] || collectionName;
@@ -1533,6 +1537,17 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
 
       setSelectedRecord(null);
       setIsEditingRecord(false);
+
+      if (segment === 'members') setMembers(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'member_workers') setMemberWorkers(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'workers') setWorkers(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'first_timer_workers') setFirstTimerWorkers(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'first_timers') setFirstTimers(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'training_registrations') setTrainingRegs(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'house_fellowship_registrations') setHfRegs(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'interest_groups') setInterestGroups(prev => prev.filter(item => item.id !== recordId));
+      else if (segment === 'children_department') setChildrenDepartment(prev => prev.filter(item => item.id !== recordId));
+
       addAuditLog("Delete Registration", `Record reference code: ${recordId} deleted from ${segment}.`);
       alert("Registration deleted successfully.");
     } catch (err: any) {
@@ -1612,8 +1627,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   // --- HOD REGISTRY WRITE / UPDATE / DELETE ---
   const handleAddNewHod = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminUser?.role !== 'SuperAdmin') {
-      alert("Access denied. Only SuperAdmin can add Heads of Departments.");
+    if (adminUser?.role !== 'SuperAdmin' && adminUser?.role !== 'Admin') {
+      alert("Access denied. Only SuperAdmin or Admin can add Heads of Departments.");
       return;
     }
     if (!newHodName.trim() || !newHodDept.trim()) {
@@ -1672,8 +1687,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   };
 
   const handleUpdateHod = async (hId: string, name: string, dept: string, email: string, phone: string) => {
-    if (adminUser?.role !== 'SuperAdmin') {
-      alert("Access denied. Only SuperAdmin can modify Heads of Departments.");
+    if (adminUser?.role !== 'SuperAdmin' && adminUser?.role !== 'Admin') {
+      alert("Access denied. Only SuperAdmin or Admin can modify Heads of Departments.");
       return;
     }
     const updatedFields = { fullName: name, department: dept, email, phoneNumber: phone };
@@ -1707,8 +1722,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   };
 
   const handleDeleteHod = async (hId: string, name: string) => {
-    if (adminUser?.role !== 'SuperAdmin') {
-      alert("Access denied. Only SuperAdmin can remove Heads of Departments.");
+    if (adminUser?.role !== 'SuperAdmin' && adminUser?.role !== 'Admin') {
+      alert("Access denied. Only SuperAdmin or Admin can remove Heads of Departments.");
       return;
     }
     if (!window.confirm(`Are you sure you want to remove HOD Leader: ${name}?`)) {
@@ -1743,16 +1758,17 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   // --- DYNAMIC SEGMENT COUNTS FOR REAL STATS ---
   const statsSummary = useMemo(() => {
     return {
-      total: firstTimers.length + firstTimerWorkers.length + members.length + memberWorkers.length + workers.length + trainingRegs.length + hfRegs.length + interestGroups.length,
+      total: firstTimers.length + firstTimerWorkers.length + members.length + memberWorkers.length + workers.length + trainingRegs.length + hfRegs.length + interestGroups.length + childrenDepartment.length,
       firstTimersCount: firstTimers.length + firstTimerWorkers.length,
       membersCount: members.length + memberWorkers.length,
       workersCount: workers.length,
       workersTotalOnboarding: firstTimerWorkers.length + memberWorkers.length + workers.length,
       trainingTotal: trainingRegs.length,
       hfTotal: hfRegs.length,
-      interestsTotal: interestGroups.length
+      interestsTotal: interestGroups.length,
+      childrenTotal: childrenDepartment.length
     };
-  }, [firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups]);
+  }, [firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups, childrenDepartment]);
 
   // --- BIRTHDAYS LIST MEMO & SELECTION STATE FUNCTIONS ---
   const birthdaysList = useMemo(() => {
@@ -1790,10 +1806,11 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     addToList(trainingRegs, 'Training Enrollments', 'training_registrations');
     addToList(hfRegs, 'House Fellowship', 'house_fellowship_registrations');
     addToList(interestGroups, 'Interest Groups', 'interest_groups');
+    addToList(childrenDepartment, 'Children Department', 'children_department');
 
     // Sort by daysUntil ascending (so today and tomorrow are at the very top)
     return list.sort((a, b) => a.birthdayInfo.daysUntil - b.birthdayInfo.daysUntil);
-  }, [firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups]);
+  }, [firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups, childrenDepartment]);
 
   const displayedBirthdays = useMemo(() => {
     if (bdayFilterTab === 'this_month') {
@@ -1908,6 +1925,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         segment === 'workers' ? 'workers' :
         segment === 'training_registrations' ? 'training_registrations' :
         segment === 'house_fellowship_registrations' ? 'house_fellowship_registrations' :
+        segment === 'children_department' ? 'children_department' :
         'interest_groups';
 
       await safeFetchJson(`/api/records/${collName}/${recordId}`, {
@@ -1929,6 +1947,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       else if (segment === 'training_registrations') setTrainingRegs(updateState);
       else if (segment === 'house_fellowship_registrations') setHfRegs(updateState);
       else if (segment === 'interest_groups') setInterestGroups(updateState);
+      else if (segment === 'children_department') setChildrenDepartment(updateState);
 
       // Save to local storage as well for continuous replication
       const localStorageKey = 
@@ -1939,6 +1958,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         segment === 'workers' ? 'team_glory_workers' :
         segment === 'training_registrations' ? 'team_glory_training_registrations' :
         segment === 'house_fellowship_registrations' ? 'team_glory_house_fellowship_registrations' :
+        segment === 'children_department' ? 'team_glory_children_department' :
         'team_glory_interest_groups';
 
       try {
@@ -1986,6 +2006,13 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         refId: 'TXN-' + Math.random().toString(36).substring(3, 9).toUpperCase(),
         gateway: deliveryChannel === 'Email' ? 'Team Glory Mailer Server' : deliveryChannel === 'WhatsApp' ? 'WhatsApp Cloud API Gateway' : 'Team Glory SMTP & WhatsApp Cloud API Gateway'
       });
+
+      // Redirect to WhatsApp on send if channel is WhatsApp or Both
+      if (deliveryChannel === 'WhatsApp' || deliveryChannel === 'Both') {
+        const cleanPhone = bdayReg.phoneNumber.replace(/[^\d]/g, '');
+        const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(bdayCustomMessage)}`;
+        window.open(whatsappUrl, '_blank');
+      }
 
       setSendingBdayStatus('success');
     } catch (err: any) {
@@ -2246,9 +2273,10 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       case 'training_registrations': return trainingRegs;
       case 'house_fellowship_registrations': return hfRegs;
       case 'interest_groups': return interestGroups;
+      case 'children_department': return childrenDepartment;
       default: return workers;
     }
-  }, [activeSegment, firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups]);
+  }, [activeSegment, firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups, childrenDepartment]);
 
   const filteredAndSortedRecords = useMemo(() => {
     let result = [...activeRecordsList];
@@ -3026,7 +3054,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           </div>
 
           {/* Sub Specialty Stats Bento Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
             <div className="bg-slate-50/50 dark:bg-gray-800/40 p-4 rounded-2xl border border-slate-100 dark:border-gray-700 flex justify-between items-center">
               <div>
                 <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block">Training Enrollments</span>
@@ -3054,6 +3082,16 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               </div>
               <div className="text-right">
                 <span className="text-2xl font-black text-teal-500">{statsSummary.interestsTotal}</span>
+              </div>
+            </div>
+
+            <div className="bg-slate-50/50 dark:bg-gray-800/40 p-4 rounded-2xl border border-slate-100 dark:border-gray-700 flex justify-between items-center">
+              <div>
+                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider block">Children's Department</span>
+                <span className="text-sm text-slate-500 dark:text-slate-400 mt-1 font-semibold">Nurtured children registry</span>
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-black text-purple-500">{statsSummary.childrenTotal}</span>
               </div>
             </div>
           </div>
@@ -3891,6 +3929,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   <option value="training_registrations">Training Registrations</option>
                   <option value="house_fellowship_registrations">House Fellowship Placement</option>
                   <option value="interest_groups">Interest Groups Onboarding</option>
+                  <option value="children_department">Children's Department</option>
                 </select>
               </div>
             </div>
@@ -4240,7 +4279,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               <span className="text-[10px] text-gray-400 uppercase font-bold">Ministerial Leaders Registry and Placements matches</span>
             </div>
             
-            {adminUser?.role === 'SuperAdmin' ? (
+            {adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin' ? (
               <button
                 onClick={() => setShowAddHodModal(true)}
                 className="px-4.5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl shadow-md flex items-center gap-1.5 cursor-pointer"
@@ -4250,7 +4289,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               </button>
             ) : (
               <span className="text-[11px] font-bold text-slate-500 bg-slate-100 dark:bg-gray-900 border border-slate-200 dark:border-gray-850 px-3 py-1.5 rounded-xl self-start">
-                🛡️ HOD creation restricted to Super Admin
+                🛡️ HOD creation restricted to Administrators
               </span>
             )}
           </div>
@@ -4264,7 +4303,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     <th className="px-5 py-3 col-span-2">Assigned Ministry Department</th>
                     <th className="px-5 py-3">Email</th>
                     <th className="px-5 py-3">Contact Phone</th>
-                    {adminUser?.role === 'SuperAdmin' && <th className="px-5 py-3 text-center">Actions</th>}
+                    {(adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin') && <th className="px-5 py-3 text-center">Actions</th>}
                   </tr>
                 </thead>
 
@@ -4342,7 +4381,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                               </td>
                               <td className="px-5 py-4 text-[11px] font-mono">{hod.email || 'N/A'}</td>
                               <td className="px-5 py-4">{hod.phoneNumber || 'N/A'}</td>
-                              {adminUser?.role === 'SuperAdmin' && (
+                              {(adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin') && (
                                 <td className="px-5 py-4 text-center space-x-1.5">
                                   <button
                                     onClick={() => setEditingHod(hod)}
@@ -5020,6 +5059,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   <option value="interest_groups">Interest Group Registrations (interest_groups)</option>
                   <option value="training_registrations">Training Registrations (training_registrations)</option>
                   <option value="heads_of_departments">Heads of Departments - HOD (heads_of_departments)</option>
+                  <option value="children_department">Children's Department (children_department)</option>
                 </select>
               </div>
 
@@ -5046,6 +5086,9 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
                   {importTarget === 'heads_of_departments' && ['fullName', 'department', 'email', 'phoneNumber'].map(col => (
+                    <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
+                  ))}
+                  {importTarget === 'children_department' && ['fullName', 'phoneNumber', 'email', 'gender', 'dateOfBirth', 'address', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
                 </div>

@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   User, BookOpen, Heart, CheckSquare, Sparkles, Building, Briefcase, 
   ChevronRight, ChevronLeft, Loader2, Save, Users, AlertCircle, 
-  MapPin, CheckCircle2, Copy, Check, Info, Library, ShieldCheck, HelpCircle
+  MapPin, CheckCircle2, Copy, Check, Info, Library, ShieldCheck, HelpCircle,
+  Baby
 } from 'lucide-react';
 import { HeadOfDepartment } from '../types';
 import { MOCK_HODS } from '../mockData';
@@ -70,7 +71,8 @@ type PathwayType =
   | 'workers'
   | 'training_registrations'
   | 'house_fellowship_registrations'
-  | 'interest_groups';
+  | 'interest_groups'
+  | 'children_department';
 
 type FormScreen =
   | 'personal_info'
@@ -543,6 +545,44 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
       setScreen('success');
     } catch (glErr: any) {
       setErrorMessage(`Registration submission error: ${glErr.message || glErr}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Submit Children Department Registration
+  const submitChildrenDepartment = async () => {
+    setErrorMessage(null);
+    setSubmitting(true);
+
+    try {
+      // 1. Is there duplicate? Double check before write
+      const duplicateFound = await triggerDuplicateCheck();
+      if (duplicateFound) {
+        return;
+      }
+
+      const rawCode = await generateSpecialId('CH', 'children_department');
+      const docData = {
+        id: rawCode,
+        ...getBaseDataset()
+      };
+
+      // 2. Save cloud or sandbox database
+      try {
+        await saveRegistrationRecord('children_department', docData);
+      } catch (err) {
+        console.warn("Cloud save was bypassed for children_department:", err);
+      }
+
+      // 3. Local Mirror
+      saveToLocalStorage('team_glory_children_department', docData);
+
+      setCompletedRecordId(rawCode);
+      setCurrPathway('children_department');
+      setScreen('success');
+    } catch (glErr: any) {
+      setErrorMessage(`Children Department registration error: ${glErr.message || glErr}`);
     } finally {
       setSubmitting(false);
     }
@@ -1210,6 +1250,29 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
                 </div>
                 <div className="flex items-center gap-1 text-xs text-teal-600 dark:text-teal-400 font-bold mt-4">
                   Select Groups <ChevronRight className="w-3.5 h-3.5" />
+                </div>
+              </button>
+
+              {/* Option 7: Children's Department */}
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrPathway('children_department');
+                  submitChildrenDepartment();
+                }}
+                className="p-5 border border-slate-200 dark:border-white/10 rounded-2xl text-left bg-purple-50/20 hover:bg-purple-50/40 dark:bg-slate-950/20 dark:hover:bg-slate-950/35 hover:border-purple-400 transition-all flex flex-col justify-between cursor-pointer group"
+              >
+                <div>
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center mb-3">
+                    <Baby className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                  </div>
+                  <h3 className="font-bold text-slate-800 dark:text-white text-base">Children's Department</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                    Register directly under our Children's Department for professional spiritual care and nurture.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 text-xs text-purple-650 dark:text-purple-400 font-bold mt-4">
+                  Register Child <ChevronRight className="w-3.5 h-3.5" />
                 </div>
               </button>
             </div>
@@ -2169,6 +2232,15 @@ export default function RegistrationForm({ onSuccess, onBack, darkMode, sandboxB
                     Thank you for joining TEAM GLORY.<br /><br />
                     Your information has been received and you will be connected to the appropriate groups and next steps.
                     A coordinator may contact you with further details. Welcome to community, growth, and service.
+                  </p>
+                )}
+
+                {/* Pathway 7: children_department */}
+                {currPathway === 'children_department' && (
+                  <p>
+                    Thank you! Your registration for the **Children's Department** has been completed successfully.<br /><br />
+                    We are so excited to support and nurture your child's spiritual path and educational development in the Royal Children's Community.
+                    A children's coordinator or teacher will connect with you soon.
                   </p>
                 )}
               </div>

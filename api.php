@@ -162,7 +162,7 @@ function initializeDatabase($db) {
     }
 
     // 2. Dynamic registry records tables
-    $segments = ['first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers'];
+    $segments = ['first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers', 'children_department'];
     foreach ($segments as $seg) {
         $db->exec("CREATE TABLE IF NOT EXISTS $seg (
             id TEXT PRIMARY KEY,
@@ -228,7 +228,7 @@ function initializeDatabase($db) {
     // 5b. Run safe migrations to add occupation to any pre-existing SQLite databases
     $upgradeTables = [
         'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
-        'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+        'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'children_department'
     ];
     foreach ($upgradeTables as $ut) {
         try {
@@ -425,7 +425,7 @@ function checkDuplicate($db, $fullName, $email, $phoneNumber, $excludeId = null)
 
     $registrationSegments = [
         'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
-        'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+        'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'children_department'
     ];
 
     foreach ($registrationSegments as $seg) {
@@ -457,7 +457,8 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
     // Validate segment availability
     $allowedSegments = [
         'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
-        'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'system_license'
+        'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'system_license',
+        'heads_of_departments', 'children_department'
     ];
     if (!in_array($segment, $allowedSegments)) {
         errorResponse("Invalid dynamic model segment: $segment", 400);
@@ -562,7 +563,7 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
 
         $registrationSegments = [
             'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
-            'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+            'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'children_department'
         ];
 
         $newId = "REC" . rand(1000, 9999) . date('is');
@@ -627,7 +628,7 @@ function handleRecordsRoute($db, $method, $segment, $id = null) {
 
         $registrationSegments = [
             'first_timers', 'first_timer_workers', 'members', 'member_workers', 'workers',
-            'training_registrations', 'house_fellowship_registrations', 'interest_groups'
+            'training_registrations', 'house_fellowship_registrations', 'interest_groups', 'children_department'
         ];
 
         if (in_array($segment, $registrationSegments)) {
