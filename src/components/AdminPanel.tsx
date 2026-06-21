@@ -26,6 +26,8 @@ export function getBirthdayInfo(dob: string) {
     'july', 'august', 'september', 'october', 'november', 'december'
   ];
 
+  const dobLower = dob.trim().toLowerCase();
+
   if (yyyymmddRegex.test(dob)) {
     const match = dob.match(yyyymmddRegex);
     if (match) {
@@ -33,29 +35,35 @@ export function getBirthdayInfo(dob: string) {
       const dNum = parseInt(match[3], 10);
       month = mIdx;
       day = dNum;
-      const fullMonthName = monthNames[mIdx] ? monthNames[mIdx].charAt(0).toUpperCase() + monthNames[mIdx].slice(1) : '';
-      dateLabel = `${fullMonthName} ${day}`;
     }
   } else {
-    const parts = dob.trim().toLowerCase().split(/\s+/);
+    // support slashes/skips/hyphens
+    const parts = dobLower.split(/[\s\/\-]+/).filter(Boolean);
     if (parts.length >= 2) {
-      let monthStr = '';
-      let dayStr = '';
-      if (isNaN(parseInt(parts[0], 10))) {
-        monthStr = parts[0];
-        dayStr = parts[1];
-      } else {
-        dayStr = parts[0];
-        monthStr = parts[1];
-      }
+      let first = parts[0];
+      let second = parts[1];
 
-      const dNum = parseInt(dayStr, 10);
-      const mIdx = monthNames.findIndex(m => m === monthStr || m.substring(0, 3) === monthStr);
-      if (mIdx !== -1 && !isNaN(dNum)) {
-        month = mIdx;
-        day = dNum;
-        const fullMonthName = monthNames[mIdx].charAt(0).toUpperCase() + monthNames[mIdx].slice(1);
-        dateLabel = `${fullMonthName} ${day}`;
+      // Check if one of them is a month name
+      const mIdx1 = monthNames.findIndex(m => m === first || m.substring(0, 3) === first);
+      const mIdx2 = monthNames.findIndex(m => m === second || m.substring(0, 3) === second);
+
+      if (mIdx1 !== -1) {
+        month = mIdx1;
+        day = parseInt(second, 10);
+      } else if (mIdx2 !== -1) {
+        month = mIdx2;
+        day = parseInt(first, 10);
+      } else {
+        // Both are numbers, parse as Month/Day
+        const mNum = parseInt(first, 10);
+        const dNum = parseInt(second, 10);
+        if (!isNaN(mNum) && !isNaN(dNum) && mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+          month = mNum - 1;
+          day = dNum;
+        } else if (!isNaN(mNum) && !isNaN(dNum) && dNum >= 1 && dNum <= 12 && mNum >= 1 && mNum <= 31) {
+          month = dNum - 1;
+          day = mNum;
+        }
       }
     }
   }
@@ -63,6 +71,9 @@ export function getBirthdayInfo(dob: string) {
   if (month === -1 || day === -1) {
     return { formatted: dob, daysUntil: 9999, isToday: false, isTomorrow: false, dateLabel: dob };
   }
+
+  const fullMonthName = monthNames[month].charAt(0).toUpperCase() + monthNames[month].slice(1);
+  dateLabel = `${fullMonthName} ${day}`;
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -323,7 +334,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [isSavingWhatsappSettings, setIsSavingWhatsappSettings] = useState(false);
 
   // --- Dynamic CSV/JSON Import Wizard States ---
-  const [importTarget, setImportTarget] = useState<'members' | 'workers' | 'house_fellowship_registrations' | 'interest_groups' | 'training_registrations' | 'heads_of_departments' | 'children_department'>('members');
+  const [importTarget, setImportTarget] = useState<'first_timers' | 'first_timer_workers' | 'members' | 'member_workers' | 'workers' | 'training_registrations' | 'house_fellowship_registrations' | 'interest_groups' | 'children_department' | 'heads_of_departments'>('members');
   const [importRawText, setImportRawText] = useState('');
   const [importParsedData, setImportParsedData] = useState<any[]>([]);
   const [isDraggingImportFile, setIsDraggingImportFile] = useState(false);
@@ -1101,11 +1112,11 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       updatedAt: new Date().toISOString()
     };
 
-    if (targetType === 'members') {
+    if (targetType === 'members' || targetType === 'first_timers' || targetType === 'children_department') {
       return baseRecord;
     }
 
-    if (targetType === 'workers') {
+    if (targetType === 'workers' || targetType === 'first_timer_workers' || targetType === 'member_workers') {
       return {
         ...baseRecord,
         memberId: getVal(['memberid', 'idnumber'], 'M-' + Math.random().toString(36).substring(2, 6).toUpperCase()),
@@ -1220,20 +1231,32 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     let sampleRow: string[] = [];
     
     if (targetType === 'members') {
-      headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address'];
-      sampleRow = ['Olamide John', '2348012345678', '2348012345678', 'olamide@example.com', 'Male', '1995-10-15', 'Single', 'RCCG House of Glory Street, Lekki'];
+      headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'occupation'];
+      sampleRow = ['Olamide John', '2348012345678', '2348012345678', 'olamide@example.com', 'Male', '10/15', 'Single', 'RCCG House of Glory Street, Lekki', 'Engineer'];
+    } else if (targetType === 'first_timers') {
+      headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'occupation'];
+      sampleRow = ['Bro David', '2348033334444', '2348033334444', 'david@example.com', 'Male', '10/15', 'Single', 'RCCG Way, Lagos', 'Software Developer'];
+    } else if (targetType === 'first_timer_workers') {
+      headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'occupation'];
+      sampleRow = ['Sis Grace', '2348011112222', '2348011112222', 'grace@example.com', 'Female', '04/22', 'Single', 'Glory Estate, Abuja', 'Ushering', 'Greeters', 'Completed', 'Teacher'];
+    } else if (targetType === 'member_workers') {
+      headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'occupation'];
+      sampleRow = ['Bro Samuel', '2348077778888', '2348077778888', 'samuel@example.com', 'Male', '08/30', 'Married', 'Victory Estate, Lagos', 'Choir', 'Media', 'Completed', 'Banker'];
     } else if (targetType === 'workers') {
       headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus'];
-      sampleRow = ['Sister Deborah', '2347098765432', '2347098765432', 'deborah@example.com', 'Female', '1998-04-22', 'Married', 'Phase 1, Gbagada', 'Ushering', 'Multimedia', 'I have completed the programme.'];
+      sampleRow = ['Sister Deborah', '2347098765432', '2347098765432', 'deborah@example.com', 'Female', '04/22', 'Married', 'Phase 1, Gbagada', 'Ushering', 'Multimedia', 'I have completed the programme.'];
     } else if (targetType === 'house_fellowship_registrations') {
       headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'neighbourhood', 'landmark'];
-      sampleRow = ['Brother Festus', '2348123456789', '2348123456789', 'festus@example.com', 'Male', '1990-12-01', 'Ajah', 'Lekki Scheme 2', 'Opposite Golden Tulip Hotel'];
+      sampleRow = ['Brother Festus', '2348123456789', '2348123456789', 'festus@example.com', 'Male', '12/01', 'Lekki Scheme 2', 'Ajah', 'Opposite Golden Tulip Hotel'];
     } else if (targetType === 'interest_groups') {
       headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'selectedGroups'];
-      sampleRow = ['Sister Ruth', '2349012345678', '2349012345678', 'ruth@example.com', 'Female', '2001-07-14', 'Ikeja', 'Sports, Business & Trade'];
+      sampleRow = ['Sister Ruth', '2349012345678', '2349012345678', 'ruth@example.com', 'Female', '07/14', 'Ikeja', 'Sports, Business & Trade'];
     } else if (targetType === 'training_registrations') {
       headers = ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'trainingProgram'];
-      sampleRow = ['Brother Emmanuel', '2348055554433', '2348055554433', 'emmanuel@example.com', 'Male', '1996-02-28', 'Surulere', 'Workers-in-Training'];
+      sampleRow = ['Brother Emmanuel', '2348055554433', '2348055554433', 'emmanuel@example.com', 'Male', '02/28', 'Surulere', 'Workers-in-Training'];
+    } else if (targetType === 'children_department') {
+      headers = ['fullName', 'phoneNumber', 'email', 'gender', 'dateOfBirth', 'address', 'occupation'];
+      sampleRow = ['Little Daniel', '2348011119999', 'daniel@example.com', 'Male', '11/05', 'RCCG Children Zone, Lagos', 'Student'];
     } else if (targetType === 'heads_of_departments') {
       headers = ['fullName', 'department', 'email', 'phoneNumber'];
       sampleRow = ['Pastor Timothy', 'Ushering Unit', 'timothy@example.com', '2348033332211'];
@@ -5053,13 +5076,16 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   }}
                   className="w-full text-xs font-semibold p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900/60 text-slate-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-amber-500"
                 >
-                  <option value="members">Regular Members Registry (members)</option>
-                  <option value="workers">Department Workers & Volunteers (workers)</option>
-                  <option value="house_fellowship_registrations">House Fellowship Placements (house_fellowship)</option>
-                  <option value="interest_groups">Interest Group Registrations (interest_groups)</option>
+                  <option value="first_timers">First Timers (Offline Only) (first_timers)</option>
+                  <option value="first_timer_workers">First Timer Workers (Workforce) (first_timer_workers)</option>
+                  <option value="members">Members (Offline Only) (members)</option>
+                  <option value="member_workers">Member Workers (Workforce) (member_workers)</option>
+                  <option value="workers">Workers (Existing Workers) (workers)</option>
                   <option value="training_registrations">Training Registrations (training_registrations)</option>
-                  <option value="heads_of_departments">Heads of Departments - HOD (heads_of_departments)</option>
+                  <option value="house_fellowship_registrations">House Fellowship Placement (house_fellowship_registrations)</option>
+                  <option value="interest_groups">Interest Groups Onboarding (interest_groups)</option>
                   <option value="children_department">Children's Department (children_department)</option>
+                  <option value="heads_of_departments">Heads of Departments - HOD (heads_of_departments)</option>
                 </select>
               </div>
 
@@ -5070,25 +5096,34 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   The parser is flexible and maps headers of any casing (e.g., <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">Full Name</code>, <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">name</code>, <code className="font-mono bg-slate-200 dark:bg-gray-800 px-1 rounded text-red-500">fullname</code> are all mapped to the database).
                 </p>
                 <div className="flex flex-wrap gap-1.5 pt-1.5">
+                  {importTarget === 'first_timers' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'occupation'].map(col => (
+                    <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
+                  ))}
+                  {importTarget === 'first_timer_workers' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'occupation'].map(col => (
+                    <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
+                  ))}
                   {importTarget === 'members' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'workers' && ['fullName', 'phoneNumber', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'gender', 'email', 'maritalStatus', 'address', 'occupation'].map(col => (
+                  {importTarget === 'member_workers' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus', 'occupation'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'house_fellowship_registrations' && ['fullName', 'phoneNumber', 'address', 'neighbourhood', 'landmark', 'occupation'].map(col => (
+                  {importTarget === 'workers' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'maritalStatus', 'address', 'firstUnit', 'secondUnit', 'workersTrainingStatus'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'interest_groups' && ['fullName', 'phoneNumber', 'selectedGroups', 'gender', 'email', 'occupation'].map(col => (
+                  {importTarget === 'house_fellowship_registrations' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'neighbourhood', 'landmark'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'training_registrations' && ['fullName', 'phoneNumber', 'trainingProgram', 'gender', 'email', 'occupation'].map(col => (
+                  {importTarget === 'interest_groups' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'selectedGroups'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
-                  {importTarget === 'heads_of_departments' && ['fullName', 'department', 'email', 'phoneNumber'].map(col => (
+                  {importTarget === 'training_registrations' && ['fullName', 'phoneNumber', 'whatsappNumber', 'email', 'gender', 'dateOfBirth', 'address', 'trainingProgram'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
                   {importTarget === 'children_department' && ['fullName', 'phoneNumber', 'email', 'gender', 'dateOfBirth', 'address', 'occupation'].map(col => (
+                    <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
+                  ))}
+                  {importTarget === 'heads_of_departments' && ['fullName', 'department', 'email', 'phoneNumber'].map(col => (
                     <span key={col} className="text-[9px] px-2 py-0.5 rounded-md bg-stone-105 dark:bg-slate-750 text-stone-600 dark:text-gray-300 font-mono font-bold border border-slate-200/40">{col}</span>
                   ))}
                 </div>

@@ -714,7 +714,8 @@ const REGISTRATION_SEGMENTS = [
   'workers',
   'training_registrations',
   'house_fellowship_registrations',
-  'interest_groups'
+  'interest_groups',
+  'children_department'
 ];
 
 async function checkDuplicateDoc(fullName: string, email: string, phoneNumber: string, excludeId?: string): Promise<any | null> {
