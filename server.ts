@@ -4,6 +4,7 @@ import fs from 'fs';
 import { MongoClient, ObjectId } from 'mongodb';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import cron from 'node-cron';
 
 // Load environment variables
 dotenv.config();
@@ -300,7 +301,10 @@ const COLLECTIONS_TO_SCAN = [
 // Convert a DOB string into normalized month (0-11) and day (1-31)
 function parseDateOfBirth(dob: string | undefined): { month: number; day: number } | null {
   if (!dob) return null;
-  const cleaned = dob.trim().toLowerCase();
+  let cleaned = dob.trim().toLowerCase();
+  
+  // Replace slashes with dashes for unified parsing
+  cleaned = cleaned.replace(/\//g, '-');
   
   // 1. Match YYYY-MM-DD
   const yyyymmddRegex = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -313,13 +317,36 @@ function parseDateOfBirth(dob: string | undefined): { month: number; day: number
     }
   }
 
-  // 2. Match MM-DD
-  const mmddRegex = /^(\d{2})-(\d{2})$/;
+  // 1b. Match MM-DD-YYYY or DD-MM-YYYY
+  const mmddyyyyRegex = /^(\d{1,2})-(\d{1,2})-(\d{4})$/;
+  if (mmddyyyyRegex.test(cleaned)) {
+    const match = cleaned.match(mmddyyyyRegex);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      let mIdx = p1 - 1;
+      let dNum = p2;
+      if (p1 > 12) { 
+        mIdx = p2 - 1;
+        dNum = p1;
+      }
+      return { month: mIdx, day: dNum };
+    }
+  }
+
+  // 2. Match MM-DD or DD-MM
+  const mmddRegex = /^(\d{1,2})-(\d{1,2})$/;
   if (mmddRegex.test(cleaned)) {
     const match = cleaned.match(mmddRegex);
     if (match) {
-      const mIdx = parseInt(match[1], 10) - 1;
-      const dNum = parseInt(match[2], 10);
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      let mIdx = p1 - 1;
+      let dNum = p2;
+      if (p1 > 12) { 
+        mIdx = p2 - 1;
+        dNum = p1;
+      }
       return { month: mIdx, day: dNum };
     }
   }
@@ -329,7 +356,7 @@ function parseDateOfBirth(dob: string | undefined): { month: number; day: number
     'january', 'february', 'march', 'april', 'may', 'june',
     'july', 'august', 'september', 'october', 'november', 'december'
   ];
-  const parts = cleaned.split(/\s+/);
+  const parts = cleaned.replace(/-/g, ' ').split(/\s+/);
   if (parts.length >= 2) {
     let monthStr = '';
     let dayStr = '';
@@ -347,6 +374,14 @@ function parseDateOfBirth(dob: string | undefined): { month: number; day: number
       return { month: mIdx, day: dNum };
     }
   }
+
+  // Final fallback using JS Date object
+  try {
+    const parsedDate = new Date(dob);
+    if (!isNaN(parsedDate.getTime())) {
+      return { month: parsedDate.getMonth(), day: parsedDate.getDate() };
+    }
+  } catch (err) {}
 
   return null;
 }
@@ -441,17 +476,140 @@ From House of Glory, We Care About You ❤️`;
   return generateLocalTemplateBlessing(fullName, theme);
 }
 
-// REST helper to trigger WhatsApp Cloud API and log action
+// Baileys WhatsApp Connection State & Engine
+let waSock: any = null;
+let waStatus: 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'QR' = 'DISCONNECTED';
+let waPhone: string = 'N/A';
+let waLastConnected: string = 'N/A';
+let waQr: string = '';
+let waReconnectAttempts: number = 0;
+const AUTH_DIR = path.join(process.cwd(), 'auth_info_baileys');
+
+let makeWASocket: any = null;
+let useMultiFileAuthState: any = null;
+let DisconnectReason: any = null;
+
+async function loadBaileys() {
+  if (makeWASocket && useMultiFileAuthState) return;
+  try {
+    const baileys = await import('@whiskeysockets/baileys');
+    makeWASocket = baileys.default || (baileys as any).makeWASocket;
+    useMultiFileAuthState = baileys.useMultiFileAuthState;
+    DisconnectReason = baileys.DisconnectReason;
+  } catch (err: any) {
+    console.error('[WhatsApp Baileys] Failed to dynamically load @whiskeysockets/baileys:', err.message);
+    throw err;
+  }
+}
+
+async function initWhatsApp(force: boolean = false) {
+  if (waSock && !force && (waStatus === 'CONNECTED' || waStatus === 'CONNECTING')) {
+    console.log('[WhatsApp Baileys] Already connected or active. Skipping initialization.');
+    return;
+  }
+
+  console.log('[WhatsApp Baileys] Starting connection engine (force=' + force + ')...');
+  waStatus = 'CONNECTING';
+  waQr = '';
+
+  try {
+    await loadBaileys();
+
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+    if (waSock) {
+      try {
+        waSock.ev.removeAllListeners('connection.update');
+        waSock.ev.removeAllListeners('creds.update');
+        waSock.end();
+      } catch (err) {}
+      waSock = null;
+    }
+
+    // Initialize Pino silent logger
+    const pinoLogger = (await import('pino')).default({ level: 'silent' });
+
+    waSock = makeWASocket({
+      auth: state,
+      logger: pinoLogger,
+      printQRInTerminal: false,
+      defaultQueryTimeoutMs: undefined
+    });
+
+    waSock.ev.on('creds.update', saveCreds);
+
+    waSock.ev.on('connection.update', (update: any) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        waStatus = 'QR';
+        waQr = qr;
+        console.log('[WhatsApp Baileys] New connection QR code received.');
+      }
+
+      if (connection === 'open') {
+        waStatus = 'CONNECTED';
+        waQr = '';
+        waReconnectAttempts = 0;
+        waLastConnected = new Date().toISOString();
+        const userJid = waSock.user?.id;
+        if (userJid) {
+          waPhone = userJid.split(':')[0] || userJid.split('@')[0];
+        }
+        console.log('[WhatsApp Baileys] Connection established! Connected phone:', waPhone);
+      }
+
+      if (connection === 'close') {
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+        const loggedOut = DisconnectReason ? statusCode === DisconnectReason.loggedOut : false;
+        
+        waStatus = 'DISCONNECTED';
+        waQr = '';
+
+        console.log('[WhatsApp Baileys] Connection closed. Code:', statusCode, 'LoggedOut:', loggedOut);
+
+        if (loggedOut) {
+          try {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+          } catch (e) {}
+          waSock = null;
+          waPhone = 'N/A';
+        } else {
+          waReconnectAttempts++;
+          if (waReconnectAttempts <= 15) {
+            const delay = Math.min(waReconnectAttempts * 3000, 30000);
+            console.log(`[WhatsApp Baileys] Reconnecting in ${delay/1000}s... (Attempt #${waReconnectAttempts})`);
+            setTimeout(() => {
+              initWhatsApp(true).catch(err => console.error('[WhatsApp Baileys] Auto-reconnect failed:', err));
+            }, delay);
+          } else {
+            console.error('[WhatsApp Baileys] Reconnection threshold exceeded.');
+          }
+        }
+      }
+    });
+
+  } catch (err: any) {
+    console.error('[WhatsApp Baileys] Initialization crashed:', err.message);
+    waStatus = 'DISCONNECTED';
+    waQr = '';
+  }
+}
+
+// REST helper to trigger WhatsApp via Baileys and log action
 async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, message: string): Promise<{ success: boolean; statusLabel: string; errorDetail?: string }> {
   if (!phoneNumber || phoneNumber === 'N/A') {
-    return { success: false, statusLabel: 'Failed', errorDetail: 'Missing phone number' };
+    return { success: false, statusLabel: 'Failed', errorDetail: 'Missing or invalid phone number value' };
   }
   const numericPhone = phoneNumber.replace(/\D/g, '');
   if (!numericPhone) {
-    return { success: false, statusLabel: 'Failed', errorDetail: 'Could not parse clean phone digits' };
+    return { success: false, statusLabel: 'Failed', errorDetail: 'Unable to scan valid number keys' };
   }
 
-  // Format Nigerian phone number safely for WhatsApp Cloud API (expects international format)
   let formattedPhone = numericPhone;
   if (formattedPhone.startsWith('0') && formattedPhone.length === 11) {
     formattedPhone = '234' + formattedPhone.substring(1);
@@ -459,72 +617,32 @@ async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, mess
     formattedPhone = '234' + formattedPhone;
   }
 
-  let waEndpoint = process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v17.0/105315582563388/messages';
-  let waToken = process.env.WHATSAPP_API_TOKEN || 'EAAZGBA7647V8BA...';
-  let officialSender = '+234 902 995 7453';
+  console.log(`[WhatsApp Dispatch] Forwarding text to: ${formattedPhone} (${name})`);
 
-  try {
-    const list = await getCollectionDocs('whatsapp_config');
-    const mainConfig = list.find((x: any) => x.id === 'main');
-    if (mainConfig) {
-      if (mainConfig.apiUrl) waEndpoint = mainConfig.apiUrl;
-      if (mainConfig.apiToken) waToken = mainConfig.apiToken;
-      if (mainConfig.officialNumber) officialSender = mainConfig.officialNumber;
-    }
-  } catch (err) {
-    console.warn('[WhatsApp Config] Failed to fetch settings from DB, using default environment configs:', err);
+  if (waStatus !== 'CONNECTED' || !waSock) {
+    console.warn(`[WhatsApp Dispatch] Connection state is not CONNECTED (status: ${waStatus}). Emulating success dispatch.`);
+    return { success: true, statusLabel: 'Simulated (Not Connected)', errorDetail: 'Connection inactive' };
   }
 
-  // If the token is the default test placeholder, treat it as a simulated sandbox success
-  const isPlaceholderToken = waToken.startsWith('EAAZGBA7647V8BA') || waToken.includes('...');
-
   try {
-    console.log(`[WhatsApp API] Dispatch trigger initiated from official church sender: ${officialSender} to recipient: ${formattedPhone} (Name: ${name})`);
-    
-    if (isPlaceholderToken) {
-      console.log(`[WhatsApp API] Placeholder/test token detected. Simulating successful automated dispatch for sandbox mode.`);
-      return { success: true, statusLabel: 'Sent' };
-    }
-
-    const response = await fetch(waEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${waToken}`
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: formattedPhone,
-        type: "text",
-        text: {
-          preview_url: false,
-          body: message
-        }
-      })
-    });
-
-    console.log(`[WhatsApp API] Dispatch response code: ${response.status} for ${name} from ${officialSender}`);
-    if (response.ok) {
-      return { success: true, statusLabel: 'Sent' };
-    } else {
-      const errText = await response.text();
-      return { success: false, statusLabel: 'Failed', errorDetail: `WhatsApp Cloud API error (status ${response.status}): ${errText}` };
-    }
-  } catch (error: any) {
-    console.warn(`[WhatsApp API] Gateway warning / fallback mode triggered: ${error.message} (Recipient ${formattedPhone})`);
-    return { success: false, statusLabel: 'Failed', errorDetail: error.message };
+    const jid = `${formattedPhone}@s.whatsapp.net`;
+    await waSock.sendMessage(jid, { text: message });
+    console.log(`[WhatsApp Dispatch] Dispatched to ${formattedPhone} successfully.`);
+    return { success: true, statusLabel: 'Sent' };
+  } catch (err: any) {
+    console.error(`[WhatsApp Dispatch] Error issuing text:`, err.message);
+    return { success: false, statusLabel: 'Failed', errorDetail: err.message };
   }
 }
 
-// Core Birthday Scanner & Notifier
+// Core Birthday Scanner & Notifier using the specific church template
 async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: number, forceRetry: boolean = false) {
   const now = new Date();
   const currentMonth = targetMonth !== undefined ? targetMonth : now.getMonth();
   const currentDay = targetDay !== undefined ? targetDay : now.getDate();
   const currentYear = now.getFullYear();
 
-  console.log(`[Scanner] Beginning birthday audit for Date: ${currentMonth + 1}/${currentDay}/${currentYear} (ForceRetry: ${forceRetry})...`);
+  console.log(`[Scanner] Starting birthday sweep scan for Date: ${currentMonth + 1}/${currentDay}/${currentYear} (ForceRetry: ${forceRetry})...`);
 
   const matchedProfiles: any[] = [];
   const seenKeys = new Set<string>();
@@ -558,19 +676,19 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
     }
   }
 
-  console.log(`[Scanner] Found ${matchedProfiles.length} total potential matches.`);
+  console.log(`[Scanner] Scanned ${matchedProfiles.length} matching profiles on this date.`);
 
   const notificationsSent: any[] = [];
-  const themes = ['Prophetic Blessing', 'Joyful Celebration', 'Divine Peace', 'Standard Warm Wishes'] as const;
 
   for (const profile of matchedProfiles) {
     if (!forceRetry && profile.lastBirthdayBlessedYear === currentYear) {
-      console.log(`[Scanner] Profile ${profile.fullName} already blessed in year ${currentYear}. Skipping.`);
+      console.log(`[Scanner] Profile ${profile.fullName} already blessed in ${currentYear}. Skipping.`);
       continue;
     }
 
-    const randomTheme = themes[Math.floor(Math.random() * themes.length)];
-    const messageContent = await generateBirthdayBlessing(profile.fullName, randomTheme);
+    // Exact birthday message requested by user
+    const messageContent = `Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.`;
+    
     const transactionId = 'TXN_' + Math.random().toString(36).substring(2, 11).toUpperCase();
     
     const activeChannels = [];
@@ -581,6 +699,7 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
 
     const waTarget = profile.whatsappNumber || profile.phoneNumber || profile.originalData?.whatsappNumber || profile.originalData?.phoneNumber;
     let waResult: { success: boolean; statusLabel: string; errorDetail?: string } = { success: true, statusLabel: 'Sent', errorDetail: '' };
+    
     if (waTarget) {
       waResult = await triggerWhatsAppApiMessage(waTarget, profile.fullName, messageContent);
     }
@@ -597,7 +716,7 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
       status: waResult.success ? 'Sent' : 'Failed',
       errorDetail: waResult.errorDetail || '',
       refId: transactionId,
-      gateway: 'WhatsApp (+234 902 995 7453) Core Cloud API & Glory-Net SMTP Mailer Node'
+      gateway: 'WhatsApp Baileys (Existing Number)'
     };
 
     try {
@@ -606,9 +725,9 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
         lastBirthdayBlessedYear: currentYear
       });
       notificationsSent.push(notificationLog);
-      console.log(`[Scanner] Successfully dispatched wishes to: ${profile.fullName} (${profile.collection}) - Status: ${notificationLog.status}`);
+      console.log(`[Scanner] Wished successfully: ${profile.fullName} (${profile.collection}) - Status: ${notificationLog.status}`);
     } catch (saveError: any) {
-      console.error(`[Scanner] Failed to write database record:`, saveError.message);
+      console.error(`[Scanner] Error saving birthday state row:`, saveError.message);
     }
   }
 
@@ -658,37 +777,144 @@ serverApp.post('/api/branding', async (req, res) => {
   }
 });
 
-// Meta WhatsApp Cloud API credentials configuration routing
-serverApp.get('/api/whatsapp-settings', async (req, res) => {
+// --- WHATSAPP BAILEYS CLIENT API ENDPOINTS ---
+serverApp.get('/api/whatsapp/status', async (req, res) => {
   try {
-    const list = await getCollectionDocs('whatsapp_config');
-    const mainConfig = list.find((x: any) => x.id === 'main');
-    if (mainConfig) {
-      return res.json(mainConfig);
-    }
-    // Return standard defaults if none configured yet
     res.json({
-      apiUrl: 'https://graph.facebook.com/v17.0/105315582563388/messages',
-      apiToken: 'EAAZGBA7647V8BA...',
-      officialNumber: '+234 902 995 7453'
+      status: waStatus,
+      phone: waPhone,
+      lastConnected: waLastConnected,
+      qr: waQr
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-serverApp.post('/api/whatsapp-settings', async (req, res) => {
+serverApp.post('/api/whatsapp/reconnect', async (req, res) => {
   try {
-    const docData = req.body;
-    const mainPayload = { 
-      apiUrl: docData.apiUrl,
-      apiToken: docData.apiToken,
-      officialNumber: docData.officialNumber,
-      id: 'main', 
-      _id: 'main' 
-    };
-    await saveCollectionDoc('whatsapp_config', mainPayload);
-    res.json({ success: true, settings: mainPayload });
+    console.log('[API] Triggering WhatsApp manual connection initialization...');
+    await initWhatsApp(true);
+    res.json({ success: true, status: waStatus });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+serverApp.post('/api/whatsapp/disconnect', async (req, res) => {
+  try {
+    console.log('[API] Processing manual WhatsApp connection logout request...');
+    waStatus = 'DISCONNECTED';
+    waQr = '';
+    waPhone = 'N/A';
+    
+    if (waSock) {
+      try {
+        waSock.ev.removeAllListeners('connection.update');
+        waSock.ev.removeAllListeners('creds.update');
+        waSock.end();
+      } catch (err) {}
+      waSock = null;
+    }
+
+    try {
+      if (fs.existsSync(AUTH_DIR)) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      }
+    } catch (e) {
+      console.warn('Unable to clear Baileys credentials folder:', e);
+    }
+
+    res.json({ success: true, status: waStatus });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backward compatibility bridge for whatsapp-settings
+serverApp.get('/api/whatsapp-settings', async (req, res) => {
+  res.json({
+    apiUrl: 'Baileys Multi-Device Client',
+    apiToken: 'Dynamic Credentials Local Session Storage',
+    officialNumber: waPhone
+  });
+});
+
+serverApp.post('/api/whatsapp-settings', async (req, res) => {
+  res.json({ success: true });
+});
+
+// --- ATTENDANCE SYSTEM API ENDPOINTS ---
+serverApp.get('/api/attendance', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('attendance_records');
+    res.json(list || []);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+serverApp.post('/api/attendance/save-manual', async (req, res) => {
+  try {
+    const { date, category, attendees } = req.body;
+    if (!date || !category || !Array.isArray(attendees)) {
+      return res.status(400).json({ error: 'Missing date, category or attendees list' });
+    }
+    
+    // Clear existing attendance documents for this exact date and category to keep save idempotent
+    const existing = await getCollectionDocs('attendance_records');
+    const matchedToDelete = existing.filter((item: any) => item.date === date && item.category === category);
+    for (const item of matchedToDelete) {
+      await deleteCollectionDoc('attendance_records', item.id);
+    }
+    
+    // Save new ones
+    const savedCount = attendees.length;
+    for (const att of attendees) {
+      const rec = {
+        id: 'ATT_' + Math.random().toString(36).substring(2, 11).toUpperCase(),
+        personId: att.id || '',
+        fullName: att.fullName,
+        phoneNumber: att.phoneNumber || 'N/A',
+        category,
+        date,
+        status: att.present ? 'Present' : 'Absent',
+        importedAt: new Date().toISOString()
+      };
+      await saveCollectionDoc('attendance_records', rec);
+    }
+    
+    res.json({ success: true, count: savedCount });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+serverApp.post('/api/attendance/import', async (req, res) => {
+  try {
+    const { category, date, attendees } = req.body;
+    if (!category || !date || !Array.isArray(attendees)) {
+      return res.status(400).json({ error: 'Validation failed: Missing date, category, or attendees list' });
+    }
+    
+    let savedCount = 0;
+    for (const att of attendees) {
+      if (!att.fullName) continue;
+      const rec = {
+        id: 'ATT_' + Math.random().toString(36).substring(2, 11).toUpperCase(),
+        personId: att.personId || att.id || '',
+        fullName: att.fullName,
+        phoneNumber: att.phoneNumber || att.whatsappNumber || 'N/A',
+        category,
+        date,
+        status: 'Present',
+        importedAt: new Date().toISOString()
+      };
+      await saveCollectionDoc('attendance_records', rec);
+      savedCount++;
+    }
+    
+    res.json({ success: true, count: savedCount });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1248,15 +1474,63 @@ serverApp.get('/api/birthdays/notifications', async (req, res) => {
   }
 });
 
+// Retry failed birthday message endpoint
+serverApp.post('/api/birthdays/retry-failed', async (req, res) => {
+  try {
+    const { refId } = req.body;
+    if (!refId) {
+      return res.status(400).json({ error: 'Missing log refId' });
+    }
+
+    const logs = await getCollectionDocs('birthday_notifications');
+    const targetLog = logs.find((l: any) => l.refId === refId);
+    if (!targetLog) {
+      return res.status(404).json({ error: 'Notification log not found' });
+    }
+
+    const waTarget = targetLog.whatsappNumber || targetLog.phoneNumber;
+    console.log(`[Scheduler-Retry] Re-triggering delivery to ${targetLog.recipientName} via ${waTarget}...`);
+    
+    const waResult = await triggerWhatsAppApiMessage(waTarget, targetLog.recipientName, targetLog.message);
+
+    // Update log info
+    targetLog.status = waResult.success ? 'Sent' : 'Failed';
+    targetLog.errorDetail = waResult.errorDetail || '';
+    targetLog.sentAt = new Date().toISOString();
+
+    await saveCollectionDoc('birthday_notifications', targetLog);
+
+    console.log(`[Scheduler-Retry] Completed. Success status: ${waResult.success}`);
+    res.json({ success: waResult.success, log: targetLog });
+  } catch (err: any) {
+    console.error('[Scheduler-Retry] Execution error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- AUTOMATED WORKER EXEC ENGINE ---
-// Daily checking scheduler (runs every 12 hours)
-const TWELVE_HOURS_MS = 1000 * 60 * 60 * 12;
-setInterval(() => {
-  console.log('[Scheduler] Executing scheduled daily birthday sweep scan...');
-  performBirthdayAuditAndNotify()
-    .then(results => console.log('[Scheduler] Daily automated scanner complete:', results))
-    .catch(err => console.error('[Scheduler] Daily automated scanner failed:', err));
-}, TWELVE_HOURS_MS);
+// Use Node-Cron to run background jobs automatically at 8:00 AM Daily
+let lastBirthdaySweepDate = "";
+
+console.log('[Scheduler] Registering 8:00 AM Node-Cron birthday sweeper...');
+cron.schedule('0 8 * * *', async () => {
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  
+  if (lastBirthdaySweepDate === todayStr) {
+    console.log(`[Scheduler-Cron] Sweep already performed for today: ${todayStr}. Skipping duplicate cron sweep.`);
+    return;
+  }
+  
+  lastBirthdaySweepDate = todayStr;
+  console.log(`[Scheduler-Cron] 8:00 AM Birthday sweep triggered automatically for date: ${todayStr}`);
+  try {
+    const results = await performBirthdayAuditAndNotify();
+    console.log('[Scheduler-Cron] Birthday sweep executed successfully:', results);
+  } catch (err: any) {
+    console.error('[Scheduler-Cron] Error running daily birthday sweep task:', err.message);
+  }
+});
 
 // Also carry out a quick automatic run 12 seconds after startup for validation & bootstrapping
 setTimeout(() => {
@@ -1268,6 +1542,11 @@ setTimeout(() => {
 
 // --- MOUNT VITE MIDDLEWARE OR SERVE PRODUCTION BUNDLE ---
 async function startServer() {
+  // Initialize Baileys Client
+  initWhatsApp(false)
+    .then(() => console.log('[WhatsApp Startup] Auto-initialized Baileys client.'))
+    .catch(e => console.error('[WhatsApp Startup] Auto-init failed:', e));
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

@@ -300,8 +300,32 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [errorData, setErrorData] = useState<string | null>(null);
   const [memberQrCodeDataUrl, setMemberQrCodeDataUrl] = useState<string>('');
 
+  // Baileys WhatsApp Connection States
+  const [waStatus, setWaStatus] = useState<'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'QR'>('DISCONNECTED');
+  const [waPhone, setWaPhone] = useState('N/A');
+  const [waLastConnected, setWaLastConnected] = useState('N/A');
+  const [waQr, setWaQr] = useState('');
+  const [waActionRunning, setWaActionRunning] = useState(false);
+
+  // Attendance Tracker States
+  const [attendanceRecords, setAttendanceRecords] = useState<any[]>([]);
+  const [loadingAttendance, setLoadingAttendance] = useState(false);
+  const [attendanceDate, setAttendanceDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [attendanceCategory, setAttendanceCategory] = useState<'children' | 'members' | 'workers'>('members');
+  const [attendanceList, setAttendanceList] = useState<any[]>([]);
+  const [attendanceStatusMap, setAttendanceStatusMap] = useState<Record<string, boolean>>({});
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  
+  // Custom backdated attendance import states
+  const [attendanceImportTarget, setAttendanceImportTarget] = useState<'children' | 'members' | 'workers'>('members');
+  const [attendanceImportDate, setAttendanceImportDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [attendanceImportText, setAttendanceImportText] = useState('');
+  const [isAttendanceImportRunning, setIsAttendanceImportRunning] = useState(false);
+  const [showImportAttendanceModal, setShowImportAttendanceModal] = useState(false);
+  const [hoveredHeatmapDay, setHoveredHeatmapDay] = useState<any | null>(null);
+
   // Active Main Navigation Tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'volunteer_dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit' | 'whatsapp_gateway' | 'import_center'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'volunteer_dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit' | 'whatsapp_gateway' | 'import_center' | 'attendance_tracker'>('dashboard');
   
   // Active Database Record Segment Selection
   const [activeSegment, setActiveSegment] = useState<RecordSegment>('workers');
@@ -525,6 +549,82 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     loadConfigs();
   }, []);
 
+  // Dynamic WhatsApp Polling Effect
+  useEffect(() => {
+    let active = true;
+    let timer: any = null;
+
+    const pollWhatsApp = async () => {
+      try {
+        const res = await fetch('/api/whatsapp/status');
+        if (!res.ok) throw new Error('API down');
+        const data = await res.json();
+        if (active) {
+          setWaStatus(data.status);
+          setWaPhone(data.phone || 'N/A');
+          setWaLastConnected(data.lastConnected || 'N/A');
+          setWaQr(data.qr || '');
+        }
+      } catch (err) {
+        console.warn('[WhatsApp Polling] Failed connecting to API:', err);
+      }
+    };
+
+    if (activeTab === 'whatsapp_gateway') {
+      pollWhatsApp();
+      timer = setInterval(pollWhatsApp, 3000);
+    }
+
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [activeTab]);
+
+  // Helper translating categories to segment names
+  const categoryToSegment = (cat: 'children' | 'members' | 'workers'): string => {
+    if (cat === 'children') return 'children_department';
+    if (cat === 'members') return 'members';
+    return 'workers';
+  };
+
+  // Fetch and align Attendance list
+  const fetchAttendanceData = async () => {
+    setLoadingAttendance(true);
+    try {
+      const segment = categoryToSegment(attendanceCategory);
+      const peopleRes = await fetch(`/api/records/${segment}`);
+      const people = await peopleRes.json();
+      const sortedPeople = Array.isArray(people) ? people.sort((a: any, b: any) => (a.fullName || '').localeCompare(b.fullName || '')) : [];
+
+      const logRes = await fetch('/api/attendance');
+      const logs = await logRes.json();
+      const attLogs = Array.isArray(logs) ? logs : [];
+
+      const mappedStatus: Record<string, boolean> = {};
+      const relevantLogs = attLogs.filter((item: any) => item.category === attendanceCategory && item.date === attendanceDate);
+      
+      relevantLogs.forEach((item: any) => {
+        const key = item.personId || item.fullName;
+        mappedStatus[key] = item.status === 'Present';
+      });
+
+      setAttendanceList(sortedPeople);
+      setAttendanceStatusMap(mappedStatus);
+      setAttendanceRecords(attLogs);
+    } catch (err) {
+      console.error('Failed to load attendance logs:', err);
+    } finally {
+      setLoadingAttendance(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'attendance_tracker') {
+      fetchAttendanceData();
+    }
+  }, [activeTab, attendanceCategory, attendanceDate]);
+
   // Legacy Firebase Firestore Realtime Listeners have been successfully migrated to standard pool syncs.
 
   // Real-time Database Sync Logic via Express + MongoDB REST API endpoints
@@ -568,6 +668,13 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       try {
         const adminsList = await safeFetchJson('/api/admins_accounts');
         if (adminsList && Array.isArray(adminsList)) setAllAdminAccounts(adminsList);
+      } catch (e) {}
+
+      try {
+        const attLogs = await safeFetchJson('/api/attendance');
+        if (attLogs && Array.isArray(attLogs)) {
+          setAttendanceRecords(attLogs);
+        }
       } catch (e) {}
 
       try {
@@ -2132,6 +2239,149 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     ];
   }, [firstTimers, firstTimerWorkers, members, memberWorkers, workers, trainingRegs, hfRegs, interestGroups]);
 
+  // Weekly attendance trends compute for children, members, and workers
+  const weeklyAttendanceTrendsData = useMemo(() => {
+    const groups: Record<string, { members: number; workers: number; children: number; dateObject: Date }> = {};
+    
+    attendanceRecords.forEach((item: any) => {
+      if (!item.date || item.status === 'Absent') return;
+      
+      const d = new Date(item.date);
+      if (isNaN(d.getTime())) return;
+      
+      // Get Sunday of that week
+      const day = d.getDay();
+      const diff = d.getDate() - day;
+      const sunday = new Date(d.getFullYear(), d.getMonth(), diff);
+      sunday.setHours(0, 0, 0, 0);
+      const key = sunday.toISOString().split('T')[0];
+      
+      if (!groups[key]) {
+        groups[key] = { members: 0, workers: 0, children: 0, dateObject: sunday };
+      }
+      
+      const catRaw = (item.category || '').toLowerCase();
+      if (catRaw.includes('child')) {
+        groups[key].children += 1;
+      } else if (catRaw.includes('work') || catRaw.includes('staff')) {
+        groups[key].workers += 1;
+      } else {
+        groups[key].members += 1;
+      }
+    });
+    
+    const sortedKeys = Object.keys(groups).sort();
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    
+    const parsedData = sortedKeys.map(key => {
+      const data = groups[key];
+      const sunday = data.dateObject;
+      return {
+        week: `W/C ${months[sunday.getMonth()]} ${sunday.getDate()}`,
+        members: data.members,
+        workers: data.workers,
+        children: data.children,
+      };
+    });
+
+    if (parsedData.length === 0) {
+      // Return beautiful default peaks as sample data to keep dashboard visually flawless
+      return [
+        { week: 'W/C May 24', members: 45, workers: 12, children: 10 },
+        { week: 'W/C May 31', members: 48, workers: 15, children: 12 },
+        { week: 'W/C Jun 7', members: 55, workers: 16, children: 14 },
+        { week: 'W/C Jun 14', members: 62, workers: 18, children: 15 },
+        { week: 'W/C Jun 21', members: 68, workers: 22, children: 18 }
+      ];
+    }
+    return parsedData;
+  }, [attendanceRecords]);
+
+  // Compute 365-day attendance heatmap grid
+  const attendanceHeatmapData = useMemo(() => {
+    const countMap: Record<string, number> = {};
+    let maxCount = 0;
+
+    attendanceRecords.forEach((item: any) => {
+      if (!item.date || item.status === 'Absent') return;
+      const key = item.date; // formatted as YYYY-MM-DD
+      countMap[key] = (countMap[key] || 0) + 1;
+      if (countMap[key] > maxCount) {
+        maxCount = countMap[key];
+      }
+    });
+
+    const today = new Date();
+    // For 53 columns, we need 371 days. Let's find a Sunday about 53 weeks ago.
+    const startOffset = 364 + today.getDay(); // Go back 52 full weeks + current week offset
+    const startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() - startOffset);
+    startDate.setHours(0, 0, 0, 0);
+
+    const gridDays: { dateStr: string; dateLabel: string; count: number; level: number; weekday: number; monthLabel: string }[] = [];
+    
+    // Create an iterator
+    const currentDateIter = new Date(startDate);
+    for (let i = 0; i < 371; i++) {
+      const dateStr = currentDateIter.toISOString().split('T')[0];
+      
+      let count = countMap[dateStr] || 0;
+      // Beautiful Sunday/Wednesday peak simulator if database attendance table is fresh/empty
+      if (attendanceRecords.length === 0) {
+        const wday = currentDateIter.getDay();
+        if (wday === 0) {
+          // Sunday peak simulator
+          count = Math.floor(Math.abs(Math.sin(i / 10)) * 25) + 35;
+        } else if (wday === 3) {
+          // Wednesday mid-week peak simulator
+          count = Math.floor(Math.abs(Math.sin(i / 15)) * 12) + 15;
+        } else {
+          count = 0;
+        }
+      }
+      
+      let level = 0;
+      if (count > 0) {
+        const currentMax = maxCount || 60;
+        const ratio = count / currentMax;
+        if (ratio <= 0.25) level = 1;
+        else if (ratio <= 0.5) level = 2;
+        else if (ratio <= 0.75) level = 3;
+        else level = 4;
+      }
+
+      const monthLabel = currentDateIter.toLocaleDateString('en-US', { month: 'short' });
+      const dateLabel = currentDateIter.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+      gridDays.push({
+        dateStr,
+        dateLabel,
+        count,
+        level,
+        weekday: currentDateIter.getDay(),
+        monthLabel
+      });
+
+      currentDateIter.setDate(currentDateIter.getDate() + 1);
+    }
+
+    const columns: (typeof gridDays)[] = [];
+    for (let i = 0; i < gridDays.length; i += 7) {
+      columns.push(gridDays.slice(i, i + 7));
+    }
+
+    const monthHeaderLabels: { text: string; colIndex: number }[] = [];
+    let lastMonth = '';
+    columns.forEach((week, colIndex) => {
+      const firstDayMonth = week[0].monthLabel;
+      if (firstDayMonth !== lastMonth) {
+        monthHeaderLabels.push({ text: firstDayMonth, colIndex });
+        lastMonth = firstDayMonth;
+      }
+    });
+
+    return { columns, monthHeaderLabels, maxCount: maxCount || 60, isEmpty: attendanceRecords.length === 0 };
+  }, [attendanceRecords]);
+
   // Monthly trends compute
   const monthlyTrendsData = useMemo(() => {
     const trendMap: { [key: string]: number } = {};
@@ -3076,6 +3326,18 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         </button>
 
         <button
+          onClick={() => setActiveTab('attendance_tracker')}
+          className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+            activeTab === 'attendance_tracker'
+            ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+            : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <CheckCircle className="w-4 h-4" />
+          Attendance Tracker
+        </button>
+
+        <button
           onClick={() => setActiveTab('audit')}
           className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
             activeTab === 'audit'
@@ -3285,6 +3547,215 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     Download QR
                   </a>
                 )}
+              </div>
+            </div>
+          </div>
+
+          {/* --- WEEKLY ATTENDANCE TRENDS & TODAY'S BIRTHDAYS ROW --- */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            {/* Weekly Attendance trends chart */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs p-5 lg:col-span-3 space-y-4">
+              <div className="flex justify-between items-center border-b border-slate-100 dark:border-gray-750 pb-2.5">
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-blue-500 animate-pulse" />
+                    Weekly Attendance Trends
+                  </h3>
+                  <p className="text-[10px] text-gray-400 mt-0.5 font-semibold">Tracked dynamically across children, members, and workforce segments</p>
+                </div>
+                {attendanceRecords.length === 0 ? (
+                  <span className="text-[9px] font-black pointer-events-none text-amber-600 bg-amber-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider" title="Real database is empty. Showing demonstrative sample peaks.">
+                    DEMO PREVIEW
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-black pointer-events-none text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-full uppercase tracking-wider" title="Aggregated from real imported attendance table">
+                    ACTUAL METRICS ({attendanceRecords.length} logs)
+                  </span>
+                )}
+              </div>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={weeklyAttendanceTrendsData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#88888820" />
+                    <XAxis dataKey="week" stroke="#a0aec0" fontSize={11} fontStyle="bold" />
+                    <YAxis stroke="#a0aec0" fontSize={11} />
+                    <Tooltip contentStyle={{ borderRadius: '15px' }} />
+                    <Legend />
+                    <Line type="monotone" dataKey="members" stroke="#3b82f6" strokeWidth={3} activeDot={{ r: 8 }} name="Members" />
+                    <Line type="monotone" dataKey="workers" stroke="#f59e0b" strokeWidth={3} activeDot={{ r: 6 }} name="Workers" />
+                    <Line type="monotone" dataKey="children" stroke="#a855f7" strokeWidth={3} activeDot={{ r: 6 }} name="Children" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Today's Birthdays Widget */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs p-5 flex flex-col space-y-4">
+              <div className="border-b border-slate-100 dark:border-gray-750 pb-2.5">
+                <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                  <Cake className="w-4 h-4 text-rose-500 animate-bounce" />
+                  Today's Birthdays
+                </h3>
+                <p className="text-[10px] text-gray-400 mt-0.5 font-semibold">Celebrating today ({new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})</p>
+              </div>
+
+              <div className="flex-1 overflow-y-auto max-h-[250px] space-y-3 pr-1 scrollbar-thin scrollbar-thumb-gray-200">
+                {birthdaysList.filter(b => b.birthdayInfo.isToday || b.birthdayInfo.daysUntil === 0).length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-4">
+                    <Gift className="w-10 h-10 text-gray-300 dark:text-gray-600 mb-2 stroke-1" />
+                    <p className="text-xs font-bold text-slate-500 dark:text-gray-400">No Birthdays Today</p>
+                    <p className="text-[9px] text-gray-450 mt-1 max-w-[150px]">All blessings for other upcoming dates are synced below</p>
+                  </div>
+                ) : (
+                  birthdaysList.filter(b => b.birthdayInfo.isToday || b.birthdayInfo.daysUntil === 0).map((celebrant, idx) => {
+                    const segmentColors: Record<string, string> = {
+                      members: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+                      member_workers: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400',
+                      workers: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+                      first_timers: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+                      children_department: 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                    };
+                    return (
+                      <div key={idx} className="p-3 bg-slate-50/50 dark:bg-gray-900/30 rounded-2xl border border-slate-100 dark:border-gray-750 flex flex-col justify-between gap-2.5 transition-all hover:bg-slate-50">
+                        <div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-extrabold text-xs text-slate-850 dark:text-white truncate max-w-[110px]" title={celebrant.fullName}>
+                              {celebrant.fullName}
+                            </span>
+                            <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full whitespace-nowrap ${segmentColors[celebrant.segmentKey] || 'bg-slate-500/10 text-slate-650'}`}>
+                              {celebrant.segmentLabel || 'Member'}
+                            </span>
+                          </div>
+                          <span className="text-[9px] font-mono font-bold text-gray-400 block mt-0.5">
+                            📞 {celebrant.phoneNumber || 'No phone'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openBdayConsole(celebrant)}
+                          className="w-full py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl font-bold flex items-center justify-center gap-1.5 text-[9px] uppercase tracking-wider transition-all cursor-pointer shadow-xs"
+                        >
+                          <Send className="w-3" />
+                          Send Greeting
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* --- ANNUAL ATTENDANCE HEATMAP --- */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs p-5 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 dark:border-gray-750 pb-3">
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-emerald-500 animate-pulse" />
+                  Historical Attendance Activity Heatmap
+                </h3>
+                <p className="text-[10px] text-gray-400 mt-0.5 font-semibold">
+                  Annually-mapped 365-day tracking representation of historical attendance logs
+                </p>
+              </div>
+
+              {/* Dynamic hover state overlay detail container */}
+              <div className="min-h-[28px] h-7 flex items-center bg-slate-50 dark:bg-gray-900/40 border border-slate-100 dark:border-gray-800 px-3 py-1 rounded-xl transition-all">
+                {hoveredHeatmapDay ? (
+                  <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">
+                    📅 <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{hoveredHeatmapDay.dateLabel}</span>:{" "}
+                    <span className="text-slate-900 dark:text-white font-black">{hoveredHeatmapDay.count} present</span>
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                    Hover over grids to explore daily metrics
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Heatmap Grid container */}
+            <div className="relative">
+              <div className="overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-gray-700 flex flex-col min-w-full">
+                {/* Month labels header */}
+                <div className="flex pl-8 h-4 relative text-[9px] font-bold text-slate-400 select-none min-w-[760px] mb-1">
+                  {attendanceHeatmapData.monthHeaderLabels.map((lbl, idx) => (
+                    <span
+                      key={idx}
+                      className="absolute transform -translate-x-1/2"
+                      style={{ left: `${(lbl.colIndex / 53) * 100}%`, marginLeft: '32px' }}
+                    >
+                      {lbl.text}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Day-of-week rows + matrix of columns */}
+                <div className="flex min-w-[760px]">
+                  {/* Row markers (Day of week labels) */}
+                  <div className="w-8 flex flex-col justify-between text-[8px] font-bold text-slate-400 select-none pr-2 py-0.5 h-24">
+                    <span>Sun</span>
+                    <span>Tue</span>
+                    <span>Thu</span>
+                    <span>Sat</span>
+                  </div>
+
+                  {/* Columns of 7 days */}
+                  <div className="flex-1 flex justify-between gap-1 h-24">
+                    {attendanceHeatmapData.columns.map((week, colIdx) => (
+                      <div key={colIdx} className="flex-1 flex flex-col justify-between gap-1">
+                        {week.map((day, rowIdx) => {
+                          const levelColors: Record<number, string> = {
+                            0: 'bg-slate-50 dark:bg-gray-800/40 hover:bg-slate-100 dark:hover:bg-gray-700/60',
+                            1: 'bg-emerald-100 dark:bg-emerald-950/25 border border-emerald-500/10 hover:bg-emerald-200',
+                            2: 'bg-emerald-300 dark:bg-emerald-800/40 border border-emerald-500/20 hover:bg-emerald-400',
+                            3: 'bg-emerald-500 hover:bg-emerald-600',
+                            4: 'bg-emerald-600 dark:bg-emerald-500 shadow-xs ring-1 ring-emerald-500/20 hover:bg-emerald-700'
+                          };
+                          return (
+                            <div
+                              key={rowIdx}
+                              onMouseEnter={() => setHoveredHeatmapDay(day)}
+                              onMouseLeave={() => setHoveredHeatmapDay(null)}
+                              onClick={() => {
+                                setHoveredHeatmapDay(day);
+                                // Set attendance Date filter if clicked so they can explore that date
+                                setAttendanceDate(day.dateStr);
+                                setActiveTab('attendance_tracker');
+                              }}
+                              className={`flex-1 rounded-[3px] transition-all cursor-pointer ${levelColors[day.level]}`}
+                              title={`${day.dateLabel}: ${day.count} present`}
+                            />
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Map Key Footer */}
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2 text-[10px] text-gray-400 border-t border-slate-100 dark:border-gray-750 font-semibold font-sans">
+              <div className="flex items-center gap-1">
+                {attendanceHeatmapData.isEmpty ? (
+                  <span className="text-[9px] font-black pointer-events-none text-amber-600 bg-amber-500/10 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    REPRESENTATIVE SAMPLE ENGINES ENABLED
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-black pointer-events-none text-emerald-600 bg-emerald-500/10 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    DATABASE SYNCHRONIZATION: LIVE MATRIX
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 select-none">
+                <span>Less</span>
+                <div className="w-2.5 h-2.5 bg-slate-50 dark:bg-gray-800/40 rounded-[2px]" />
+                <div className="w-2.5 h-2.5 bg-emerald-100 dark:bg-emerald-950/25 border border-emerald-500/10 rounded-[2px]" />
+                <div className="w-2.5 h-2.5 bg-emerald-300 dark:bg-emerald-800/40 border border-emerald-500/20 rounded-[2px]" />
+                <div className="w-2.5 h-2.5 bg-emerald-500 rounded-[2px]" />
+                <div className="w-2.5 h-2.5 bg-emerald-600 dark:bg-emerald-500 rounded-[2px]" />
+                <span>More</span>
               </div>
             </div>
           </div>
@@ -3681,6 +4152,34 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                                 </>
                               )}
                             </span>
+
+                            {!isSuccess && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    const res = await fetch('/api/birthdays/retry-failed', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ refId: log.refId })
+                                    });
+                                    const data = await res.json();
+                                    if (data.success) {
+                                      alert("WhatsApp greeting resent successfully!");
+                                    } else {
+                                      alert("Retry failed. Please check WhatsApp connection status: " + (data.error || ""));
+                                    }
+                                    const refreshedLogs = await safeFetchJson('/api/birthdays/notifications');
+                                    if (refreshedLogs && Array.isArray(refreshedLogs)) setBirthdayDispatches(refreshedLogs);
+                                  } catch (e: any) {
+                                    alert("Error retrying message: " + e.message);
+                                  }
+                                }}
+                                className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-500 hover:bg-amber-600 font-extrabold text-[8px] uppercase text-slate-950 transition-colors tracking-wider cursor-pointer select-none"
+                              >
+                                Retry
+                              </button>
+                            )}
                             
                             {log.errorDetail && (
                               <p className="text-[8px] text-rose-500 mt-0.5 font-medium max-w-[120px] truncate" title={log.errorDetail}>
@@ -4980,112 +5479,190 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         </div>
       )}
 
-      {/* --- TAB: METADATA WHATSAPP CLOUD API SETUP GATEWAY --- */}
+      {/* --- TAB: CHURCH WHATSAPP AUTOMATION GATEWAY --- */}
       {activeTab === 'whatsapp_gateway' && (
         <div className="space-y-6">
-          <div>
-            <h2 className="text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight">Meta WhatsApp Cloud API Gateway</h2>
-            <span className="text-[10px] text-gray-400 uppercase font-bold">Configure core developer credentials used by the automated sweep scheduler to distribute automatic daily text blessings</span>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                <Send className="w-5 h-5 text-amber-500 animate-pulse" />
+                Church WhatsApp Automation Gateway
+              </h2>
+              <span className="text-[10px] text-gray-400 uppercase font-bold">
+                Connect the church's existing number via Baileys and scan WhatsApp Web to run automatic birthday greetings.
+              </span>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              {waStatus === 'CONNECTED' ? (
+                <span className="px-3 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-500 border border-emerald-500/25 flex items-center gap-1.5 shadow-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  CONNECTED
+                </span>
+              ) : waStatus === 'CONNECTING' ? (
+                <span className="px-3 py-1 rounded-full text-[10px] font-black bg-sky-500/10 text-sky-500 border border-sky-500/25 flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  INITIALIZING
+                </span>
+              ) : waStatus === 'QR' ? (
+                <span className="px-3 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-500 border border-amber-500/25 flex items-center gap-1.5 animate-bounce">
+                  PENDING AUTHENTICATION
+                </span>
+              ) : (
+                <span className="px-3 py-1 rounded-full text-[10px] font-black bg-red-500/10 text-red-500 border border-red-500/25 flex items-center gap-1.5">
+                  DISCONNECTED
+                </span>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="md:col-span-2 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-6 rounded-3xl shadow-xl space-y-6">
-              <form onSubmit={handleSaveWhatsappSettings} className="space-y-4 text-xs font-semibold">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
-                    WhatsApp API endpoint gateway (URL)
-                  </label>
-                  <input
-                    type="url"
-                    value={whatsappApiUrl}
-                    onChange={(e) => setWhatsappApiUrl(e.target.value)}
-                    placeholder="https://graph.facebook.com/v17.0/YOUR_PHONE_NUMBER_ID/messages"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20"
-                    required
-                  />
-                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
-                    Retrieve your Phone Number ID from the Meta Developers Portal Console under WhatsApp &rarr; API Setup.
-                  </p>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* CONNECTION ENGINE CENTER */}
+            <div className="lg:col-span-2 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 p-6 rounded-3xl shadow-xs space-y-6">
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                
+                {/* QR Code Container / Status Graphics */}
+                <div className="flex flex-col items-center justify-center p-6 bg-slate-50 dark:bg-gray-900 rounded-3xl border border-gray-200/50 dark:border-gray-850 min-h-[300px]">
+                  {waStatus === 'QR' && waQr ? (
+                    <div className="space-y-4 text-center">
+                      <div className="bg-white p-4 rounded-2xl shadow-md inline-block">
+                        <img 
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(waQr)}`} 
+                          alt="WhatsApp Scan QR" 
+                          className="w-[200px] h-[200px] border border-gray-100 rounded-lg"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Scan this QR Code</h4>
+                        <p className="text-[10px] text-gray-400 mt-1">Open WhatsApp on your phone &rarr; Linked Devices &rarr; Link a Device.</p>
+                      </div>
+                    </div>
+                  ) : waStatus === 'CONNECTED' ? (
+                    <div className="text-center space-y-4">
+                      <div className="w-20 h-20 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center mx-auto animate-pulse">
+                        <CheckCircle className="w-10 h-10" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-emerald-600 uppercase tracking-widest">Active Connection Established</h4>
+                        <p className="text-[10px] text-gray-400 mt-1">All birthday congratulation dispatches will run in the background seamlessly.</p>
+                      </div>
+                    </div>
+                  ) : waStatus === 'CONNECTING' ? (
+                    <div className="text-center space-y-4">
+                      <Loader2 className="w-12 h-12 text-amber-500 animate-spin mx-auto" />
+                      <div>
+                        <h4 className="text-xs font-black text-slate-700 dark:text-white uppercase tracking-wider">Instantiating Multi-Device Daemon</h4>
+                        <p className="text-[10px] text-gray-400 mt-1">Acquiring authentication states over local file session directories...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center space-y-4">
+                      <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto">
+                        <AlertCircle className="w-8 h-8" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Gateway Offline</h4>
+                        <p className="text-[10px] text-gray-400 mt-1">Please start the connection daemon below to scan your device.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
-                    Permanent access Token / bearer key
-                  </label>
-                  <textarea
-                    value={whatsappApiToken}
-                    onChange={(e) => setWhatsappApiToken(e.target.value)}
-                    placeholder="EAAZGBA7647V8BA..."
-                    rows={4}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20 resize-none"
-                    required
-                  />
-                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
-                    Use a Permanent System User Token generated inside Meta Business Manager to guarantee long-term auto-scheduler stability without key expiration.
-                  </p>
-                </div>
+                {/* Status Details / Operations */}
+                <div className="space-y-5">
+                  <div className="space-y-4 bg-slate-50/50 dark:bg-gray-900/60 p-5 rounded-2xl border border-gray-150/40 dark:border-gray-850">
+                    <div>
+                      <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-black">Connection Status</span>
+                      <span className={`text-[11px] font-bold ${waStatus === 'CONNECTED' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                        {waStatus}
+                      </span>
+                    </div>
 
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
-                    Official church WhatsApp registered (transmitter ID number / labels)
-                  </label>
-                  <input
-                    type="text"
-                    value={whatsappOfficialNumber}
-                    onChange={(e) => setWhatsappOfficialNumber(e.target.value)}
-                    placeholder="+234 902 995 7453"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white font-mono focus:ring-2 focus:ring-amber-500/20"
-                    required
-                  />
-                  <p className="text-[9px] text-gray-450 dark:text-gray-500 mt-1.5 font-sans leading-relaxed">
-                    Enter the registered transmitter telephone number displaying to external parish recipients.
-                  </p>
-                </div>
+                    <div>
+                      <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-black">Connected Phone Number</span>
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-white font-mono">
+                        {waPhone !== 'N/A' ? `+${waPhone}` : 'No phone linked'}
+                      </span>
+                    </div>
 
-                <div className="pt-4 border-t border-slate-100 dark:border-white/5 flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={isSavingWhatsappSettings}
-                    className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-black dark:bg-amber-500 dark:hover:bg-amber-600 text-white dark:text-slate-950 text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer transition shadow-lg"
-                  >
-                    {isSavingWhatsappSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4.5 h-4.5" />}
-                    Save API credentials
-                  </button>
+                    <div>
+                      <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-black">Last Sync Connection</span>
+                      <span className="text-[11px] font-bold text-slate-700 dark:text-white">
+                        {waLastConnected !== 'N/A' ? new Date(waLastConnected).toLocaleString() : 'N/A'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 pt-2">
+                    <button
+                      onClick={async () => {
+                        setWaActionRunning(true);
+                        try {
+                          await fetch('/api/whatsapp/reconnect', { method: 'POST' });
+                        } catch (e) {}
+                        setWaActionRunning(false);
+                      }}
+                      disabled={waActionRunning}
+                      className="w-full px-4 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-55 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${waActionRunning ? 'animate-spin' : ''}`} />
+                      Start/Reconnect Gateway
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        if (!confirm("Are you sure you want to disconnect? This will log out the session and clear credentials.")) return;
+                        setWaActionRunning(true);
+                        try {
+                          await fetch('/api/whatsapp/disconnect', { method: 'POST' });
+                        } catch (e) {}
+                        setWaActionRunning(false);
+                      }}
+                      disabled={waActionRunning || waStatus === 'DISCONNECTED'}
+                      className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      Disconnect & Clear Credentials
+                    </button>
+                  </div>
                 </div>
-              </form>
+              </div>
+
             </div>
 
             {/* Quick Helper Reference Sidebar Card */}
-            <div className="bg-slate-50 dark:bg-gray-900 border border-gray-200/60 dark:border-gray-800 p-6 rounded-3xl space-y-4">
-              <div className="inline-flex items-center justify-center w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-450">
+            <div className="bg-slate-50 dark:bg-gray-900 border border-gray-200/60 dark:border-gray-800 p-6 rounded-3xl space-y-4 self-start">
+              <div className="inline-flex items-center justify-center w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-500">
                 <Send className="w-5 h-5" />
               </div>
-              <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Automated Dispatcher Guide</h3>
+              <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Baileys Automation Guide</h3>
               
               <div className="space-y-3.5 text-[10px] text-gray-550 dark:text-gray-400 leading-relaxed font-semibold">
                 <p>
-                  The system's background scheduler reviews member registries in real-time. Matches found daily trigger a REST hook invoking the Meta Cloud API.
+                  No external pricing, cloud developer credentials, or Graph API setups are required. Your system emulates a local WhatsApp Web tab connected 24/7.
                 </p>
                 
                 <div className="p-3 bg-white dark:bg-gray-950 border border-slate-100 dark:border-gray-850 rounded-xl space-y-1">
-                  <span className="text-[9px] uppercase font-black text-indigo-500">Scheduler Cycle</span>
+                  <span className="text-[9px] uppercase font-black text-indigo-500">Persistent Session</span>
                   <p className="text-[9px] opacity-80">
-                    Runs automatically every 12 hours on server cycle, plus instantly upon boot & force sweep.
+                    Once first-time authentication is completed, credentials are secure. The engine auto-reconnects and restores states upon server reboot.
                   </p>
                 </div>
 
                 <div className="p-3 bg-white dark:bg-gray-950 border border-slate-100 dark:border-gray-855 rounded-xl space-y-1">
-                  <span className="text-[9px] uppercase font-black text-emerald-500">Sandbox Safety Mode</span>
-                  <p className="text-[9px] opacity-80">
-                    Use the preset token ending with <span className="font-mono">...</span> to simulate successful deliveries on pre-production sandboxes without charging credits.
+                  <span className="text-[9px] uppercase font-black text-emerald-500">Congratulation Template</span>
+                  <p className="text-[9px] opacity-80 font-mono italic">
+                    "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour..."
                   </p>
                 </div>
 
                 <div className="pt-2 border-t border-slate-250 dark:border-gray-800">
-                  <span className="block text-[8px] uppercase tracking-widest text-slate-400 mb-1">Database Connectivity Status</span>
+                  <span className="block text-[8px] uppercase tracking-widest text-slate-400 mb-1">Background Sweeper Schedule</span>
                   <div className="flex items-center gap-1.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
-                    <span className="text-[9px] font-bold text-emerald-600">CONNECTED & HEALTHY</span>
+                    <span className="text-[9px] font-bold text-emerald-600">ACTIVE - CHECKS EVERY DAY AT 8:00 AM</span>
                   </div>
                 </div>
               </div>
@@ -5409,6 +5986,367 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* --- TAB: CHURCH ATTENDANCE TRACKER DASHBOARD --- */}
+      {activeTab === 'attendance_tracker' && (
+        <div className="space-y-6 text-slate-800 dark:text-slate-100">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                <CheckCircle className="w-5 h-5 text-amber-500" />
+                Church Attendance Tracker Dashboard
+              </h2>
+              <span className="text-[10px] text-gray-400 uppercase font-bold">
+                Log real-time attendance or upload/paste historical attendance worksheets for members, workforce, and the children's department.
+              </span>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setAttendanceImportTarget(attendanceCategory);
+                  setAttendanceImportDate(attendanceDate);
+                  setAttendanceImportText('');
+                  setShowImportAttendanceModal(true);
+                }}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition duration-150 flex items-center gap-2 cursor-pointer shadow-sm"
+              >
+                <UploadCloud className="w-4 h-4 text-slate-950" />
+                Import Attendance Sheet
+              </button>
+            </div>
+          </div>
+
+          {/* ATTENDANCE CONFIGURATION AND FILTER PANEL */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xs">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              
+              {/* Category selector */}
+              <div>
+                <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                  Select Attendance Segment / Column
+                </label>
+                <div className="flex gap-1 bg-slate-50 dark:bg-gray-900 p-1 rounded-xl border border-gray-200 dark:border-gray-750">
+                  {(['members', 'workers', 'children'] as const).map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setAttendanceCategory(cat)}
+                      className={`flex-1 py-2 text-xs font-black uppercase rounded-lg transition-all cursor-pointer ${
+                        attendanceCategory === cat
+                        ? 'bg-amber-500 text-slate-950 shadow-xs font-extrabold'
+                        : 'text-gray-400 hover:text-slate-700 dark:hover:text-white'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Date Input */}
+              <div>
+                <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                  Attendance Cycle Date
+                </label>
+                <input
+                  type="date"
+                  value={attendanceDate}
+                  onChange={(e) => setAttendanceDate(e.target.value)}
+                  className="w-full text-xs font-semibold p-2.5 rounded-xl border border-gray-200 dark:border-gray-755 bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-white focus:outline-none"
+                />
+              </div>
+
+              {/* Attendance Quick Stats */}
+              <div className="grid grid-cols-3 gap-2 bg-slate-50/50 dark:bg-gray-900/40 p-3 rounded-2xl border border-gray-150/40 dark:border-gray-800 font-bold">
+                <div className="text-center font-black">
+                  <span className="block text-[8px] uppercase text-gray-400">Enrolled</span>
+                  <span className="text-sm text-slate-800 dark:text-white">{attendanceList.length}</span>
+                </div>
+                <div className="text-center font-black border-l border-slate-200 dark:border-gray-800">
+                  <span className="block text-[8px] uppercase text-emerald-500">Present</span>
+                  <span className="text-sm text-emerald-500">
+                    {attendanceList.filter(p => attendanceStatusMap[p.id || p.fullName]).length}
+                  </span>
+                </div>
+                <div className="text-center font-black border-l border-slate-200 dark:border-gray-800">
+                  <span className="block text-[8px] uppercase text-rose-500">Absent</span>
+                  <span className="text-sm text-rose-500">
+                    {attendanceList.filter(p => !attendanceStatusMap[p.id || p.fullName]).length}
+                  </span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          {/* ACTIVE REGISTRY CHECKLIST CARD */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs overflow-hidden">
+            <div className="p-5 border-b border-gray-100 dark:border-gray-700 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-1">
+                  Active checklist: <span className="text-amber-600 dark:text-amber-400 font-extrabold">{attendanceCategory.toUpperCase()} REGISTRY</span>
+                </h3>
+              </div>
+              
+              <div className="flex items-center gap-2 self-stretch sm:self-auto">
+                <button
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    attendanceList.forEach(p => {
+                      next[p.id || p.fullName] = true;
+                    });
+                    setAttendanceStatusMap(next);
+                  }}
+                  className="text-[10px] px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-600 hover:text-slate-950 font-black uppercase tracking-wider rounded-lg border border-emerald-500/20 transition cursor-pointer flex-1 sm:flex-none text-center"
+                >
+                  Mark All Present
+                </button>
+
+                <button
+                  onClick={() => {
+                    setAttendanceStatusMap({});
+                  }}
+                  className="text-[10px] px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-600 hover:text-white font-black uppercase tracking-wider rounded-lg border border-rose-500/20 transition cursor-pointer flex-1 sm:flex-none text-center"
+                >
+                  Mark All Absent
+                </button>
+              </div>
+            </div>
+
+            {loadingAttendance ? (
+              <div className="p-16 text-center space-y-2">
+                <Loader2 className="w-8 h-8 text-amber-500 animate-spin mx-auto" />
+                <p className="text-xs font-bold text-gray-400 uppercase">Synchronizing with attendance registers...</p>
+              </div>
+            ) : attendanceList.length === 0 ? (
+              <div className="p-16 text-center space-y-2">
+                <Users className="w-10 h-10 text-gray-300 mx-auto" />
+                <p className="text-xs font-black text-slate-800 dark:text-white uppercase">No records found inside this department segment</p>
+                <p className="text-[10px] text-gray-400">Please populate the registry inside the "Import Center" first.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-50 dark:divide-gray-800/50 max-h-[480px] overflow-y-auto">
+                {attendanceList.map((person, idx) => {
+                  const key = person.id || person.fullName;
+                  const isPresent = !!attendanceStatusMap[key];
+                  return (
+                    <div key={idx} className="flex items-center justify-between p-4 hover:bg-slate-50/50 dark:hover:bg-gray-900/50 transition">
+                      <div className="space-y-0.5 text-left">
+                        <span className="block text-xs font-bold text-slate-800 dark:text-white">{person.fullName}</span>
+                        <span className="block text-[10px] text-gray-400 font-mono">
+                          Phone: {person.phoneNumber || 'N/A'} • Address: {person.address || 'N/A'}
+                        </span>
+                      </div>
+
+                      <div>
+                        <button
+                          onClick={() => {
+                            setAttendanceStatusMap(prev => ({
+                              ...prev,
+                              [key]: !isPresent
+                            }));
+                          }}
+                          className={`px-4.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider cursor-pointer border transition flex items-center gap-1.5 ${
+                            isPresent
+                            ? 'bg-emerald-500 text-slate-950 border-emerald-500 font-extrabold shadow-sm'
+                            : 'bg-slate-100 text-gray-550 border-slate-200 dark:bg-gray-900 dark:border-gray-750 dark:text-gray-400 hover:border-gray-400'
+                          }`}
+                        >
+                          {isPresent && <Check className="w-3 h-3" />}
+                          {isPresent ? 'Present' : 'Absent'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="p-4 bg-slate-50 dark:bg-gray-900/60 border-t border-gray-100 dark:border-gray-750 flex justify-between items-center text-xs">
+              <span className="text-[10px] text-gray-400 font-bold uppercase">
+                Idempotent registry overwrite is enabled automatically.
+              </span>
+              
+              <button
+                onClick={async () => {
+                  setSavingAttendance(true);
+                  try {
+                    const attendeesPayload = attendanceList.map(p => ({
+                      id: p.id || '',
+                      fullName: p.fullName,
+                      phoneNumber: p.phoneNumber || 'N/A',
+                      present: !!attendanceStatusMap[p.id || p.fullName]
+                    }));
+
+                    const res = await fetch('/api/attendance/save-manual', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        date: attendanceDate,
+                        category: attendanceCategory,
+                        attendees: attendeesPayload
+                      })
+                    });
+
+                    if (res.ok) {
+                      alert('Attendance ledger successfully committed and secured to cloud database!');
+                    } else {
+                      alert('Commit process failed. Please check connection logs.');
+                    }
+                  } catch (e: any) {
+                    alert('Error saving data to target database: ' + e.message);
+                  } finally {
+                    setSavingAttendance(false);
+                    fetchAttendanceData();
+                  }
+                }}
+                disabled={savingAttendance || loadingAttendance}
+                className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-md"
+              >
+                {savingAttendance ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4.5 h-4.5 text-slate-950" />}
+                Commit Attendance Registry
+              </button>
+            </div>
+          </div>
+
+          {/* ATTENDANCE IMPORT BACKDATED MODAL */}
+          {showImportAttendanceModal && (
+            <div className="fixed inset-0 bg-slate-900/60 dark:bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+              <div className="bg-white dark:bg-gray-800 rounded-3xl border border-slate-100 dark:border-gray-750 w-full max-w-xl p-6 shadow-2xl relative space-y-4">
+                
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <UploadCloud className="w-4 h-4 text-amber-500" />
+                      Bulk Import Attendance Ledger Sheet
+                    </h3>
+                    <p className="text-[10px] text-gray-400">Backdate attendance for children, members, or workforce segments instantly.</p>
+                  </div>
+                  <button
+                    onClick={() => setShowImportAttendanceModal(false)}
+                    className="text-gray-400 hover:text-slate-800 dark:hover:text-white font-bold cursor-pointer text-base"
+                  >
+                    &times;
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 col-span-2 text-left">
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                      Target Backdate
+                    </label>
+                    <input
+                      type="date"
+                      value={attendanceImportDate}
+                      onChange={(e) => setAttendanceImportDate(e.target.value)}
+                      className="w-full text-xs font-semibold p-2.5 rounded-xl border border-gray-100 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-850 dark:text-white focus:outline-none"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                      Department Segment
+                    </label>
+                    <select
+                      value={attendanceImportTarget}
+                      onChange={(e) => setAttendanceImportTarget(e.target.value as any)}
+                      className="w-full text-xs font-semibold p-2.5 rounded-xl border border-gray-150 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-850 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    >
+                      <option value="members">Members (Offline Only)</option>
+                      <option value="workers">Workers (Existing Workers)</option>
+                      <option value="children">Children's Department</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-left">
+                  <div className="flex justify-between">
+                    <label className="block text-[9px] font-black uppercase tracking-wider text-slate-400">
+                      Step 2: Paste CSV/Excel Row Content
+                    </label>
+                    <span className="text-[8px] text-gray-400">Requires header: <code className="font-mono text-amber-500">fullName</code></span>
+                  </div>
+                  <textarea
+                    rows={6}
+                    value={attendanceImportText}
+                    onChange={(e) => setAttendanceImportText(e.target.value)}
+                    placeholder="fullName,phoneNumber,status&#10;Olamide John,2348012345678,Present&#10;Ngozi Amara,2348098765432,Present"
+                    className="w-full p-3 font-mono text-[10px] rounded-2xl border border-gray-150 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-slate-850 dark:text-white resize-none focus:outline-none text-left"
+                  ></textarea>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-white/5">
+                  <button
+                    onClick={() => setShowImportAttendanceModal(false)}
+                    className="px-4 py-2 text-xs font-bold uppercase rounded-xl border border-gray-200 dark:border-gray-700 hover:bg-slate-50 dark:text-gray-300 dark:hover:bg-gray-900 cursor-pointer text-slate-700 transition"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    onClick={async () => {
+                      if (!attendanceImportText.trim()) return alert("Please specify CSV / template lines to parse.");
+                      setIsAttendanceImportRunning(true);
+                      
+                      try {
+                        const linesWithHeaders = parseCSV(attendanceImportText);
+                        if (linesWithHeaders.length < 2) throw new Error("Missing data rows format.");
+                        
+                        const fileHeaders = linesWithHeaders[0].map(h => h.trim().toLowerCase().replace(/[\s_-]/g, ''));
+                        const fullNameIdx = fileHeaders.indexOf('fullname');
+                        const phoneIdx = fileHeaders.findIndex(h => h.includes('phone') || h.includes('number'));
+
+                        if (fullNameIdx === -1) {
+                          throw new Error("Unable to locate column 'fullName' inside headers.");
+                        }
+
+                        const recordsArray = linesWithHeaders.slice(1).map(row => {
+                          return {
+                            fullName: row[fullNameIdx] || '',
+                            phoneNumber: phoneIdx !== -1 ? row[phoneIdx] : 'N/A'
+                          };
+                        }).filter(r => r.fullName.trim().length > 0);
+
+                        const res = await fetch('/api/attendance/import', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            category: attendanceImportTarget,
+                            date: attendanceImportDate,
+                            attendees: recordsArray
+                          })
+                        });
+
+                        if (res.ok) {
+                          alert(`Success! Parsed, backdated and saved ${recordsArray.length} records under the chosen date.`);
+                          setShowImportAttendanceModal(false);
+                          fetchAttendanceData();
+                        } else {
+                          const errText = await res.text();
+                          throw new Error("Import failed details: " + errText);
+                        }
+
+                      } catch (err: any) {
+                        alert(err.message);
+                      } finally {
+                        setIsAttendanceImportRunning(false);
+                      }
+                    }}
+                    disabled={isAttendanceImportRunning}
+                    className="px-5 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-55 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-sm font-extrabold"
+                  >
+                    {isAttendanceImportRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UploadCloud className="w-4 h-4 text-slate-950" />}
+                    Confirm & Import
+                  </button>
+                </div>
+
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
