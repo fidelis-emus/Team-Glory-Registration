@@ -409,6 +409,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [brandTitle, setBrandTitle] = useState('');
   const [brandSubtitle, setBrandSubtitle] = useState('');
   const [brandFooter, setBrandFooter] = useState('');
+  const [birthdayTemplate, setBirthdayTemplate] = useState('');
   const [isSavingBranding, setIsSavingBranding] = useState(false);
 
   // --- Meta WhatsApp Cloud API States ---
@@ -478,6 +479,14 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
     setLoading(false);
   }, []);
 
+  useEffect(() => {
+    if (adminUser?.role === 'Admin') {
+      setAdminFormRole('HOD');
+    } else {
+      setAdminFormRole('Admin');
+    }
+  }, [adminUser]);
+
   // Monitor dynamic configurations and administrative user sessions
   useEffect(() => {
     const loadConfigs = async () => {
@@ -488,6 +497,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           setBrandTitle(cfg.headerTitle || '');
           setBrandSubtitle(cfg.headerSubtitle || '');
           setBrandFooter(cfg.footerText || '');
+          setBirthdayTemplate(cfg.birthdayTemplate || "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
         }
       } catch (e) {
         console.warn('Failed to load branding settings via API:', e);
@@ -500,6 +510,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             setBrandTitle(parsed.headerTitle || '');
             setBrandSubtitle(parsed.headerSubtitle || '');
             setBrandFooter(parsed.footerText || '');
+            setBirthdayTemplate(parsed.birthdayTemplate || "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
           } catch (brErr) {}
         }
       }
@@ -912,8 +923,13 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const handleCreateAdminUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminAccountError(null);
-    if (adminUser?.role !== 'SuperAdmin') {
-      setAdminAccountError("Access denied. Only SuperAdmin can register a console administrator.");
+    const activeRole = adminUser?.role;
+    if (activeRole !== 'SuperAdmin' && activeRole !== 'Admin') {
+      setAdminAccountError("Access denied. Only SuperAdmin or Admin can register administrative accounts.");
+      return;
+    }
+    if (activeRole === 'Admin' && adminFormRole !== 'HOD') {
+      setAdminAccountError("Access denied. Admins can register HOD accounts only.");
       return;
     }
     if (!adminFormEmail || !adminFormName || !adminFormPassword) {
@@ -1139,6 +1155,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       headerTitle: brandTitle.trim(),
       headerSubtitle: brandSubtitle.trim(),
       footerText: brandFooter.trim(),
+      birthdayTemplate: birthdayTemplate.trim(),
       updatedAt: new Date().toISOString()
     };
 
@@ -5000,14 +5017,14 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               <h2 className="text-lg font-black text-slate-800 dark:text-white">Administrative Accounts Central</h2>
               <span className="text-[10px] text-gray-400 uppercase font-bold">Manage console administrators, assign access roles, and perform password resets</span>
             </div>
-            {adminUser?.role === 'SuperAdmin' ? (
+             {(adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin') ? (
               <button
                 onClick={() => {
                   setAdminAccountError(null);
                   setAdminFormName('');
                   setAdminFormEmail('');
                   setAdminFormPassword('');
-                  setAdminFormRole('Admin');
+                  setAdminFormRole(adminUser?.role === 'Admin' ? 'HOD' : 'Admin');
                   setIsAddingAdminUser(prev => !prev);
                 }}
                 className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-md flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
@@ -5017,7 +5034,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
               </button>
             ) : (
               <span className="text-[11px] font-bold text-slate-500 bg-slate-100 dark:bg-gray-900 border border-slate-200 dark:border-gray-850 px-3 py-1.5 rounded-xl self-start sm:self-auto">
-                🛡️ Register access restricted to Super Admin
+                🛡️ Register access restricted to Super Admin or Admin
               </span>
             )}
           </div>
@@ -5191,10 +5208,14 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   <select
                     value={adminFormRole}
                     onChange={e => setAdminFormRole(e.target.value as any)}
-                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-950 dark:border-gray-700 text-slate-900 dark:text-white text-xs"
+                    className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-gray-955 dark:border-gray-700 text-slate-900 dark:text-white text-xs cursor-pointer"
                   >
-                    <option value="Admin">Admin</option>
-                    <option value="SuperAdmin">SuperAdmin</option>
+                    {adminUser?.role === 'SuperAdmin' && (
+                      <>
+                        <option value="Admin">Admin</option>
+                        <option value="SuperAdmin">SuperAdmin</option>
+                      </>
+                    )}
                     <option value="HOD">HOD</option>
                   </select>
                 </div>
@@ -5242,14 +5263,26 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-gray-750 text-xs text-slate-700 dark:text-slate-350 font-semibold">
-                  {allAdminAccounts.length === 0 ? (
+                  {allAdminAccounts.filter(acc => {
+                    const currentRole = adminUser?.role;
+                    if (currentRole === 'Admin' || currentRole === 'HOD') {
+                      return acc.role !== 'SuperAdmin';
+                    }
+                    return true;
+                  }).length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-5 py-10 text-center text-slate-400 font-extrabold">
                         No active users registered. Fallback database contains standard master credentials.
                       </td>
                     </tr>
                   ) : (
-                    allAdminAccounts.map((account) => (
+                    allAdminAccounts.filter(acc => {
+                      const currentRole = adminUser?.role;
+                      if (currentRole === 'Admin' || currentRole === 'HOD') {
+                        return acc.role !== 'SuperAdmin';
+                      }
+                      return true;
+                    }).map((account) => (
                       <tr key={account.id} className="hover:bg-slate-50/50 dark:hover:bg-gray-900/30 transition-colors">
                         <td className="px-5 py-4 font-extrabold text-slate-900 dark:text-white capitalize">{account.fullName}</td>
                         <td className="px-5 py-4 font-mono text-[11px]">{account.email}</td>
@@ -5425,6 +5458,21 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                     className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-55/60 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none block"
                     required
                   />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
+                    Automated Birthday WhatsApp message template
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={birthdayTemplate}
+                    onChange={e => setBirthdayTemplate(e.target.value)}
+                    placeholder="Enter customized birthday greeting message..."
+                    className="w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-55/60 dark:bg-gray-900 text-gray-950 dark:text-white focus:ring-2 focus:ring-amber-500 outline-none block text-xs"
+                    required
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">This message will be dispatched automatically to celebrants on their birthday at 8:00 AM daily (or instantly on WhatsApp connection setup).</p>
                 </div>
 
                 <div className="pt-2 flex justify-end">

@@ -63,6 +63,7 @@ function initLocalServerDb() {
         logoBase64: null,
         headerTitle: 'RCCG HOUSE OF GLORY, YP2',
         headerSubtitle: 'TEAM GLORY',
+        birthdayTemplate: "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.",
         footerText: '© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL'
       }
     };
@@ -561,6 +562,12 @@ async function initWhatsApp(force: boolean = false) {
           waPhone = userJid.split(':')[0] || userJid.split('@')[0];
         }
         console.log('[WhatsApp Baileys] Connection established! Connected phone:', waPhone);
+        
+        // Sweep today's birthdays instantly upon successful connection to guarantee that QR scanner gets greeted automatically if not sent yet
+        console.log('[WhatsApp Baileys] Sweeping today\'s birthdays automatically on successful connection...');
+        performBirthdayAuditAndNotify()
+          .then(results => console.log('[WhatsApp Baileys] Auto birthday sweep complete:', results))
+          .catch(err => console.error('[WhatsApp Baileys] Auto birthday sweep on connection failed:', err.message));
       }
 
       if (connection === 'close') {
@@ -678,6 +685,18 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
 
   console.log(`[Scanner] Scanned ${matchedProfiles.length} matching profiles on this date.`);
 
+  // Fetch custom birthday message template from branding configuration dynamically
+  let birthdayTemplate = "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.";
+  try {
+    const list = await getCollectionDocs('branding_config');
+    const mainConfig = list.find((x: any) => x.id === 'main');
+    if (mainConfig && mainConfig.birthdayTemplate) {
+      birthdayTemplate = mainConfig.birthdayTemplate;
+    }
+  } catch (err: any) {
+    console.warn(`[Scanner] Could not load customizable birthdayTemplate, defaulting:`, err.message);
+  }
+
   const notificationsSent: any[] = [];
 
   for (const profile of matchedProfiles) {
@@ -686,8 +705,8 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
       continue;
     }
 
-    // Exact birthday message requested by user
-    const messageContent = `Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.`;
+    // Dynamic, admin-configured birthday message
+    const messageContent = birthdayTemplate;
     
     const transactionId = 'TXN_' + Math.random().toString(36).substring(2, 11).toUpperCase();
     
