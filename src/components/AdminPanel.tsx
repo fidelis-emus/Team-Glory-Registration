@@ -10,7 +10,8 @@ import {
   Download, Printer, Eye, Trash2, Calendar, FileText, Check, AlertCircle,
   Database, Shield, RefreshCw, UserCheck, BookOpen, Users, BarChart3, HelpCircle, 
   UserX, Building, Edit, Sparkles, Heart, MapPin, CheckCircle, PlusCircle, Settings, Key, ShieldCheck,
-  Loader2, Info, Briefcase, Cake, Gift, Send, Save, QrCode, UploadCloud, FileSpreadsheet, ArrowLeft
+  Loader2, Info, Briefcase, Cake, Gift, Send, Save, QrCode, UploadCloud, FileSpreadsheet, ArrowLeft,
+  Clock, AlertTriangle
 } from 'lucide-react';
 
 export function getBirthdayInfo(dob: string) {
@@ -324,8 +325,23 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [showImportAttendanceModal, setShowImportAttendanceModal] = useState(false);
   const [hoveredHeatmapDay, setHoveredHeatmapDay] = useState<any | null>(null);
 
+  // System Backup & Restore Module States
+  const [backupsList, setBackupsList] = useState<any[]>([]);
+  const [restoreLogsList, setRestoreLogsList] = useState<any[]>([]);
+  const [backupSettings, setBackupSettings] = useState<any>({
+    frequency: 'Daily',
+    time: '00:00',
+    retentionCount: 10,
+    maxBackupSize: 104857600,
+    backupFolder: '',
+    restorePermissions: 'SuperAdminOnly'
+  });
+  const [isBackupLoading, setIsBackupLoading] = useState(false);
+  const [isBackupActionRunning, setIsBackupActionRunning] = useState(false);
+  const [backupMessage, setBackupMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+
   // Active Main Navigation Tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'volunteer_dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit' | 'whatsapp_gateway' | 'import_center' | 'attendance_tracker'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'volunteer_dashboard' | 'records' | 'hods' | 'admins_management' | 'branding' | 'audit' | 'whatsapp_gateway' | 'import_center' | 'attendance_tracker' | 'backup_restore'>('dashboard');
   
   // Active Database Record Segment Selection
   const [activeSegment, setActiveSegment] = useState<RecordSegment>('workers');
@@ -418,6 +434,17 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   const [whatsappOfficialNumber, setWhatsappOfficialNumber] = useState('');
   const [isSavingWhatsappSettings, setIsSavingWhatsappSettings] = useState(false);
 
+  // --- WhatsApp Message Queue State Hooks ---
+  const [messageQueue, setMessageQueue] = useState<any[]>([]);
+  const [messageLogs, setMessageLogs] = useState<any[]>([]);
+  const [queueSearch, setQueueSearch] = useState('');
+  const [logsSearch, setLogsSearch] = useState('');
+  const [broadcastSegment, setBroadcastSegment] = useState<'members' | 'workers' | 'first_timers' | 'heads_of_departments' | 'all'>('members');
+  const [broadcastContent, setBroadcastContent] = useState('');
+  const [isQueueLoading, setIsQueueLoading] = useState(false);
+  const [queueMessage, setQueueMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [queueTab, setQueueTab] = useState<'tracker' | 'ledger' | 'broadcaster'>('tracker');
+
   // --- Dynamic CSV/JSON Import Wizard States ---
   const [importTarget, setImportTarget] = useState<'first_timers' | 'first_timer_workers' | 'members' | 'member_workers' | 'workers' | 'training_registrations' | 'house_fellowship_registrations' | 'interest_groups' | 'children_department' | 'heads_of_departments'>('members');
   const [importRawText, setImportRawText] = useState('');
@@ -497,7 +524,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           setBrandTitle(cfg.headerTitle || '');
           setBrandSubtitle(cfg.headerSubtitle || '');
           setBrandFooter(cfg.footerText || '');
-          setBirthdayTemplate(cfg.birthdayTemplate || "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
+          setBirthdayTemplate(cfg.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
         }
       } catch (e) {
         console.warn('Failed to load branding settings via API:', e);
@@ -510,7 +537,7 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
             setBrandTitle(parsed.headerTitle || '');
             setBrandSubtitle(parsed.headerSubtitle || '');
             setBrandFooter(parsed.footerText || '');
-            setBirthdayTemplate(parsed.birthdayTemplate || "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
+            setBirthdayTemplate(parsed.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
           } catch (brErr) {}
         }
       }
@@ -590,6 +617,182 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
       active = false;
       if (timer) clearInterval(timer);
     };
+  }, [activeTab]);
+
+  // Dynamic Message Queue Polling Effect
+  useEffect(() => {
+    let active = true;
+    let timer: any = null;
+
+    const fetchQueueAndLogs = async () => {
+      try {
+        const [qRes, lRes] = await Promise.all([
+          fetch('/api/message-queue'),
+          fetch('/api/message-logs')
+        ]);
+        if (qRes.ok && lRes.ok) {
+          const queueData = await qRes.json();
+          const logsData = await lRes.json();
+          if (active) {
+            setMessageQueue(queueData);
+            setMessageLogs(logsData);
+          }
+        }
+      } catch (err) {
+        console.warn('[Queue Polling] Failed connecting to API:', err);
+      }
+    };
+
+    if (activeTab === 'message_queue') {
+      fetchQueueAndLogs();
+      timer = setInterval(fetchQueueAndLogs, 4000); // Poll every 4 seconds for real-time delivery tracking
+    }
+
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [activeTab, messageQueue.length, messageLogs.length]);
+
+  const handleRetrySingleQueueItem = async (id: string) => {
+    try {
+      const res = await fetch('/api/message-queue/retry-single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      if (res.ok) {
+        setQueueMessage({ text: 'Message successfully re-queued for delivery.', type: 'success' });
+        // Immediate local refresh
+        const qRes = await fetch('/api/message-queue');
+        if (qRes.ok) setMessageQueue(await qRes.json());
+      } else {
+        throw new Error('Failed to retry message.');
+      }
+    } catch (err: any) {
+      setQueueMessage({ text: err.message, type: 'error' });
+    }
+  };
+
+  const handleRetryAllFailedQueueItems = async () => {
+    try {
+      const res = await fetch('/api/message-queue/retry-all', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setQueueMessage({ text: `Rescheduled ${data.count} failed messages back to Pending.`, type: 'success' });
+        // Immediate local refresh
+        const qRes = await fetch('/api/message-queue');
+        if (qRes.ok) setMessageQueue(await qRes.json());
+      } else {
+        throw new Error('Failed to reschedule.');
+      }
+    } catch (err: any) {
+      setQueueMessage({ text: err.message, type: 'error' });
+    }
+  };
+
+  const handleClearCompletedQueueItems = async () => {
+    try {
+      const res = await fetch('/api/message-queue/clear', { method: 'POST' });
+      if (res.ok) {
+        setQueueMessage({ text: 'Purged completed and failed entries from queue list.', type: 'success' });
+        // Immediate local refresh
+        const qRes = await fetch('/api/message-queue');
+        if (qRes.ok) setMessageQueue(await qRes.json());
+      } else {
+        throw new Error('Purge failed.');
+      }
+    } catch (err: any) {
+      setQueueMessage({ text: err.message, type: 'error' });
+    }
+  };
+
+  const handleQueueBroadcast = async () => {
+    if (!broadcastContent.trim()) {
+      setQueueMessage({ text: 'Please enter message content for the broadcast.', type: 'error' });
+      return;
+    }
+
+    setIsQueueLoading(true);
+    setQueueMessage(null);
+
+    try {
+      let list: any[] = [];
+      if (broadcastSegment === 'members') list = members;
+      else if (broadcastSegment === 'workers') list = workers;
+      else if (broadcastSegment === 'first_timers') list = firstTimers;
+      else if (broadcastSegment === 'heads_of_departments') list = hods;
+      else if (broadcastSegment === 'all') {
+        list = [...members, ...workers, ...firstTimers];
+      }
+
+      const validRecipients = list.filter(item => item.whatsappNumber || item.phoneNumber);
+      if (validRecipients.length === 0) {
+        throw new Error(`No profiles with valid WhatsApp or phone numbers found in "${broadcastSegment}" segment.`);
+      }
+
+      const res = await fetch('/api/message-queue/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipients: validRecipients,
+          messageType: 'Broadcast',
+          messageContent: broadcastContent
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setQueueMessage({ text: `Successfully queued ${data.queuedCount} broadcast messages sequentially with pacing control!`, type: 'success' });
+        setBroadcastContent('');
+        setQueueTab('tracker');
+        // Immediate local refresh
+        const qRes = await fetch('/api/message-queue');
+        if (qRes.ok) setMessageQueue(await qRes.json());
+      } else {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to queue broadcast.');
+      }
+    } catch (err: any) {
+      setQueueMessage({ text: err.message, type: 'error' });
+    } finally {
+      setIsQueueLoading(false);
+    }
+  };
+
+  // Fetch System Backup & Restore Information
+  const fetchBackupData = async () => {
+    setIsBackupLoading(true);
+    try {
+      const [bkpsRes, rstLogsRes, settingsRes] = await Promise.all([
+        fetch('/api/backups'),
+        fetch('/api/restore-logs'),
+        fetch('/api/backups/settings')
+      ]);
+
+      if (bkpsRes.ok) {
+        const backups = await bkpsRes.json();
+        setBackupsList(backups);
+      }
+      if (rstLogsRes.ok) {
+        const logs = await rstLogsRes.json();
+        setRestoreLogsList(logs);
+      }
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        setBackupSettings(settings);
+      }
+    } catch (err: any) {
+      console.error('[Backup Fetch] Failed fetching data:', err.message);
+    } finally {
+      setIsBackupLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'backup_restore') {
+      fetchBackupData();
+    }
   }, [activeTab]);
 
   // Helper translating categories to segment names
@@ -3318,17 +3521,33 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           Branding Setup
         </button>
 
-        <button
-          onClick={() => setActiveTab('whatsapp_gateway')}
-          className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
-            activeTab === 'whatsapp_gateway'
-            ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
-            : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
-          }`}
-        >
-          <Send className="w-4 h-4" />
-          WhatsApp Gateway
-        </button>
+        {(adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin') && (
+          <button
+            onClick={() => setActiveTab('whatsapp_gateway')}
+            className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'whatsapp_gateway'
+              ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+              : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+            }`}
+          >
+            <Send className="w-4 h-4" />
+            WhatsApp Gateway
+          </button>
+        )}
+
+        {(adminUser?.role === 'SuperAdmin' || adminUser?.role === 'Admin') && (
+          <button
+            onClick={() => setActiveTab('message_queue')}
+            className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'message_queue'
+              ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+              : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+            }`}
+          >
+            <Clock className="w-4 h-4 text-emerald-500 animate-pulse" />
+            Message Queue
+          </button>
+        )}
 
         <button
           onClick={() => setActiveTab('import_center')}
@@ -3365,6 +3584,20 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
           <FileText className="w-4 h-4" />
           Audit Log
         </button>
+
+        {adminUser?.role === 'SuperAdmin' && (
+          <button
+            onClick={() => setActiveTab('backup_restore')}
+            className={`px-4.5 py-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'backup_restore'
+              ? 'border-amber-500 text-amber-600 dark:text-amber-400 font-black'
+              : 'border-transparent text-gray-400 hover:text-slate-800 dark:hover:text-white'
+            }`}
+          >
+            <Database className="w-4 h-4" />
+            Backup & Restore
+          </button>
+        )}
 
 
       </div>
@@ -5645,35 +5878,47 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                   </div>
 
                   <div className="flex flex-col gap-2 pt-2">
-                    <button
-                      onClick={async () => {
-                        setWaActionRunning(true);
-                        try {
-                          await fetch('/api/whatsapp/reconnect', { method: 'POST' });
-                        } catch (e) {}
-                        setWaActionRunning(false);
-                      }}
-                      disabled={waActionRunning}
-                      className="w-full px-4 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-55 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${waActionRunning ? 'animate-spin' : ''}`} />
-                      Start/Reconnect Gateway
-                    </button>
+                    {adminUser?.role === 'Admin' ? (
+                      <button
+                        onClick={async () => {
+                          setWaActionRunning(true);
+                          try {
+                            await fetch('/api/whatsapp/reconnect', { method: 'POST' });
+                          } catch (e) {}
+                          setWaActionRunning(false);
+                        }}
+                        disabled={waActionRunning}
+                        className="w-full px-4 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-55 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${waActionRunning ? 'animate-spin' : ''}`} />
+                        Start/Reconnect Gateway (Admin)
+                      </button>
+                    ) : (
+                      <div className="p-3 bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-xl text-center text-[10px] text-gray-400 font-bold">
+                        🔒 Only console Admin accounts are authorized to initialize or connect the WhatsApp gateway.
+                      </div>
+                    )}
 
-                    <button
-                      onClick={async () => {
-                        if (!confirm("Are you sure you want to disconnect? This will log out the session and clear credentials.")) return;
-                        setWaActionRunning(true);
-                        try {
-                          await fetch('/api/whatsapp/disconnect', { method: 'POST' });
-                        } catch (e) {}
-                        setWaActionRunning(false);
-                      }}
-                      disabled={waActionRunning || waStatus === 'DISCONNECTED'}
-                      className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      Disconnect & Clear Credentials
-                    </button>
+                    {(adminUser?.role === 'Admin' || adminUser?.role === 'SuperAdmin') ? (
+                      <button
+                        onClick={async () => {
+                          if (!confirm("Are you sure you want to disconnect? This will log out the session and clear credentials.")) return;
+                          setWaActionRunning(true);
+                          try {
+                            await fetch('/api/whatsapp/disconnect', { method: 'POST' });
+                          } catch (e) {}
+                          setWaActionRunning(false);
+                        }}
+                        disabled={waActionRunning || waStatus === 'DISCONNECTED'}
+                        className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-black uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        Disconnect & Clear Credentials ({adminUser?.role === 'SuperAdmin' ? 'Superadmin' : 'Admin'})
+                      </button>
+                    ) : (
+                      <div className="p-3 bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-800 rounded-xl text-center text-[10px] text-red-500 font-bold">
+                        🔒 Disconnection is restricted to Admins and Superadmins.
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -6433,6 +6678,794 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
         </div>
       )}
 
+      {/* --- TAB: SYSTEM BACKUP & RESTORE MODULE --- */}
+      {activeTab === 'backup_restore' && adminUser?.role === 'SuperAdmin' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 dark:text-white">Database Backup & Disaster Recovery</h2>
+              <span className="text-[10px] text-gray-400 uppercase font-bold text-slate-400">Enterprise disaster mitigation: auto backups, system rollback checkpoints, and full-volume recovery</span>
+            </div>
+            
+            <button
+              onClick={async () => {
+                setIsBackupActionRunning(true);
+                setBackupMessage(null);
+                try {
+                  const res = await fetch('/api/backups/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ createdBy: adminUser?.fullName || 'SuperAdmin' })
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    setBackupMessage({ text: `Backup successfully generated: ${data.backupName}`, type: 'success' });
+                    fetchBackupData();
+                  } else {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed to create backup');
+                  }
+                } catch (err: any) {
+                  setBackupMessage({ text: err.message, type: 'error' });
+                } finally {
+                  setIsBackupActionRunning(false);
+                }
+              }}
+              disabled={isBackupActionRunning}
+              className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-55 text-white text-xs font-black uppercase tracking-wider rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/10 font-extrabold self-start sm:self-auto"
+            >
+              {isBackupActionRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-4 h-4 text-white" />}
+              Generate Backup Point
+            </button>
+          </div>
+
+          {backupMessage && (
+            <div className={`p-4 rounded-2xl flex items-center gap-3 text-xs border ${
+              backupMessage.type === 'success' 
+                ? 'bg-emerald-55/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-450' 
+                : backupMessage.type === 'info'
+                  ? 'bg-amber-55/10 border-amber-500/20 text-amber-600 dark:text-amber-450'
+                  : 'bg-red-55/10 border-red-500/20 text-red-600 dark:text-red-450'
+            }`}>
+              {backupMessage.type === 'success' ? <CheckCircle className="w-5 h-5 flex-shrink-0" /> : <AlertCircle className="w-5 h-5 flex-shrink-0" />}
+              <span className="font-bold leading-relaxed">{backupMessage.text}</span>
+            </div>
+          )}
+
+          {/* Configuration Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Backup Schedulers & Configuration */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xl">
+              <div className="flex items-center gap-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                <Settings className="w-5 h-5 text-amber-500" />
+                <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Auto-Backup Scheduler</h3>
+              </div>
+
+              <div className="space-y-3 text-xs font-semibold text-slate-600 dark:text-slate-350">
+                <div>
+                  <label className="block text-[10px] text-gray-400 uppercase font-bold mb-1">Trigger Frequency</label>
+                  <select
+                    value={backupSettings.frequency}
+                    onChange={(e) => setBackupSettings({ ...backupSettings, frequency: e.target.value })}
+                    className="w-full bg-gray-50/50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="Daily">Daily Interval</option>
+                    <option value="Weekly">Weekly (Sundays)</option>
+                    <option value="Monthly">Monthly (1st of Month)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] text-gray-400 uppercase font-bold mb-1">Execution Time (UTC)</label>
+                  <input
+                    type="time"
+                    value={backupSettings.time || '00:00'}
+                    onChange={(e) => setBackupSettings({ ...backupSettings, time: e.target.value })}
+                    className="w-full bg-gray-50/50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] text-gray-400 uppercase font-bold mb-1">Backup Retention Count</label>
+                  <input
+                    type="number"
+                    value={backupSettings.retentionCount || 10}
+                    onChange={(e) => setBackupSettings({ ...backupSettings, retentionCount: parseInt(e.target.value) || 10 })}
+                    className="w-full bg-gray-50/50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                    min="1"
+                    max="100"
+                  />
+                  <p className="text-[9px] text-gray-400 mt-1">Deletes oldest backups automatically when storage reaches this threshold</p>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    onClick={async () => {
+                      setIsBackupActionRunning(true);
+                      setBackupMessage(null);
+                      try {
+                        const res = await fetch('/api/backups/settings', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(backupSettings)
+                        });
+                        if (res.ok) {
+                          setBackupMessage({ text: 'Backup scheduler settings updated successfully!', type: 'success' });
+                        } else {
+                          throw new Error('Failed to save settings');
+                        }
+                      } catch (err: any) {
+                        setBackupMessage({ text: err.message, type: 'error' });
+                      } finally {
+                        setIsBackupActionRunning(false);
+                      }
+                    }}
+                    className="w-full py-2 bg-amber-500 hover:bg-amber-600 font-extrabold text-slate-950 text-xs uppercase tracking-wider rounded-xl transition cursor-pointer font-black"
+                  >
+                    Save Configuration
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Disaster Recovery / Restore File */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xl flex flex-col justify-between">
+              <div>
+                <div className="flex items-center gap-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                  <UploadCloud className="w-5 h-5 text-emerald-500" />
+                  <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Disaster Recovery (Restore)</h3>
+                </div>
+
+                <div className="mt-3 space-y-2 text-xs text-slate-500 leading-relaxed font-semibold">
+                  <p>
+                    Restore database records and branding assets from a previously downloaded <code className="bg-slate-100 dark:bg-slate-900 px-1 py-0.5 rounded text-amber-600 font-mono">.zip</code> archive.
+                  </p>
+                  <p className="text-red-500 font-bold border-l-2 border-red-500 pl-2">
+                    WARNING: This operation is highly destructive. All current records will be truncated and replaced. A safeguard rollback point is generated automatically.
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-4">
+                <label className="border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-amber-500 dark:hover:border-amber-500 rounded-2xl p-5 flex flex-col items-center justify-center gap-2 cursor-pointer transition text-center bg-gray-50/30 dark:bg-gray-905">
+                  <UploadCloud className="w-8 h-8 text-slate-400 animate-pulse" />
+                  <span className="text-xs font-black text-slate-700 dark:text-slate-200 uppercase">Upload Recovery Zip</span>
+                  <span className="text-[10px] text-gray-400 font-bold">Supported format: .zip backup dump</span>
+                  <input
+                    type="file"
+                    accept=".zip"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+
+                      if (!confirm(`Are you absolutely sure you want to restore the entire system from: "${file.name}"? This will drop and replace all active database tables.`)) {
+                        return;
+                      }
+
+                      setIsBackupActionRunning(true);
+                      setBackupMessage({ text: 'Parsing recovery package, creating rollback safety point, and restoring records. Please wait...', type: 'info' });
+                      
+                      const reader = new FileReader();
+                      reader.onload = async (event) => {
+                        try {
+                          const base64 = (event.target?.result as string).split(',')[1];
+                          const res = await fetch('/api/backups/restore', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              fileDataBase64: base64,
+                              filename: file.name,
+                              restoredBy: adminUser?.fullName || 'SuperAdmin'
+                            })
+                          });
+
+                          if (res.ok) {
+                            const data = await res.json();
+                            setBackupMessage({ text: `System database and local files successfully restored! Process complete in ${data.duration}ms.`, type: 'success' });
+                            fetchBackupData();
+                          } else {
+                            const err = await res.json();
+                            throw new Error(err.error || 'Restore failed');
+                          }
+                        } catch (err: any) {
+                          setBackupMessage({ text: `Disaster recovery failed: ${err.message}`, type: 'error' });
+                        } finally {
+                          setIsBackupActionRunning(false);
+                        }
+                      };
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Quick Stats / Info Card */}
+            <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xl">
+              <div className="flex items-center gap-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Disaster Recovery Metrics</h3>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 text-center font-bold">
+                <div className="bg-emerald-50/10 border border-emerald-500/10 rounded-2xl p-3">
+                  <span className="block text-[10px] text-gray-400 uppercase mb-1">Total Points</span>
+                  <span className="text-lg font-black text-slate-800 dark:text-white">{backupsList.length}</span>
+                </div>
+                <div className="bg-amber-50/10 border border-amber-500/10 rounded-2xl p-3">
+                  <span className="block text-[10px] text-gray-400 uppercase mb-1">Last Restore</span>
+                  <span className="text-[11px] font-black text-amber-600 dark:text-amber-450 truncate block mt-0.5">
+                    {restoreLogsList.length > 0 
+                      ? new Date(restoreLogsList[restoreLogsList.length - 1].restoreDate).toLocaleDateString()
+                      : 'Never'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2 text-[11px] font-semibold text-slate-500 leading-normal bg-gray-50/50 dark:bg-gray-905 border border-slate-100 dark:border-gray-700 rounded-2xl p-3">
+                <div className="flex justify-between">
+                  <span>Database Platform:</span>
+                  <span className="font-mono text-amber-600 dark:text-amber-400 font-extrabold uppercase">PostgreSQL</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Persistent Storage:</span>
+                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-extrabold uppercase">Render Disk</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Automated Engine:</span>
+                  <span className="font-mono text-slate-600 dark:text-slate-350 font-extrabold uppercase">Node-Cron</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Zipping Standard:</span>
+                  <span className="font-mono text-slate-600 dark:text-slate-350 font-extrabold uppercase">Adm-Zip 1.0</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          {/* Backup History Log */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden shadow-xl p-5 space-y-3">
+            <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider pb-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-1.5">
+              <Database className="w-4 h-4 text-amber-500" />
+              Retained Backup History Log
+            </h3>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 dark:border-gray-700/60 text-slate-400 font-extrabold uppercase text-[10px]">
+                    <th className="py-2.5 px-3 text-slate-400">Backup File Details</th>
+                    <th className="py-2.5 px-3 text-slate-400">Date Created</th>
+                    <th className="py-2.5 px-3 text-slate-400">Archive Size</th>
+                    <th className="py-2.5 px-3 text-slate-400">Generated By</th>
+                    <th className="py-2.5 px-3 text-center text-slate-400">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50 dark:divide-gray-700/40 text-slate-600 dark:text-slate-350 font-semibold">
+                  {backupsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-gray-400 font-bold">
+                        No persistent backup recovery points have been created yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    backupsList.slice().reverse().map((bkp) => (
+                      <tr key={bkp.id} className="hover:bg-slate-50/40 dark:hover:bg-gray-950 transition-colors">
+                        <td className="py-2.5 px-3 font-mono text-amber-600 dark:text-amber-450 font-bold">{bkp.backupName}</td>
+                        <td className="py-2.5 px-3">{new Date(bkp.createdAt).toLocaleString()}</td>
+                        <td className="py-2.5 px-3">{(bkp.size / 1024 / 1024).toFixed(2)} MB</td>
+                        <td className="py-2.5 px-3 uppercase text-[10px] font-black">{bkp.createdBy}</td>
+                        <td className="py-2.5 px-3 text-center flex items-center justify-center gap-1">
+                          <a
+                            href={`/api/backups/download/${bkp.backupName}`}
+                            download
+                            className="p-1.5 bg-slate-50 hover:bg-slate-100 dark:bg-gray-700/30 dark:hover:bg-gray-700 border border-slate-100 dark:border-white/5 rounded-lg text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
+                            title="Download ZIP"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </a>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Are you sure you want to permanently delete backup point "${bkp.backupName}"? This action cannot be undone.`)) return;
+                              try {
+                                const res = await fetch(`/api/backups/${bkp.id}`, { method: 'DELETE' });
+                                if (res.ok) {
+                                  setBackupMessage({ text: 'Backup point deleted successfully.', type: 'success' });
+                                  fetchBackupData();
+                                } else {
+                                  throw new Error('Deletion failed');
+                                }
+                              } catch (err: any) {
+                                setBackupMessage({ text: err.message, type: 'error' });
+                              }
+                            }}
+                            className="p-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-900/10 dark:hover:bg-red-900/30 border border-red-100/10 rounded-lg text-red-600 dark:text-red-400 transition-colors cursor-pointer"
+                            title="Delete Permanently"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* System Restore Operations Ledger */}
+          <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden shadow-xl p-5 space-y-3">
+            <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider pb-2 border-b border-gray-100 dark:border-gray-700 flex items-center gap-1.5">
+              <RefreshCw className="w-4 h-4 text-emerald-500" />
+              Disaster Recovery & Rollback Ledger
+            </h3>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-100 dark:border-gray-700/60 text-slate-400 font-extrabold uppercase text-[10px]">
+                    <th className="py-2.5 px-3 text-slate-400">Recovery Date</th>
+                    <th className="py-2.5 px-3 text-slate-400">Backup Archive Applied</th>
+                    <th className="py-2.5 px-3 text-slate-400">Operator</th>
+                    <th className="py-2.5 px-3 text-slate-400">Execution Time</th>
+                    <th className="py-2.5 px-3 text-center text-slate-400">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50 dark:divide-gray-700/40 text-slate-600 dark:text-slate-350 font-semibold">
+                  {restoreLogsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-gray-400 font-bold">
+                        No system restore or rollback operations have been logged.
+                      </td>
+                    </tr>
+                  ) : (
+                    restoreLogsList.slice().reverse().map((log) => (
+                      <tr key={log.id} className="hover:bg-slate-50/40 dark:hover:bg-gray-950 transition-colors">
+                        <td className="py-2.5 px-3">{new Date(log.restoreDate).toLocaleString()}</td>
+                        <td className="py-2.5 px-3 font-mono text-slate-500">{log.backupUsed}</td>
+                        <td className="py-2.5 px-3 uppercase text-[10px] font-black">{log.restoredBy}</td>
+                        <td className="py-2.5 px-3 font-mono">{log.duration}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            log.status === 'SUCCESS' 
+                              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' 
+                              : 'bg-red-500/10 text-red-600 dark:text-red-400'
+                          }`} title={log.errors || undefined}>
+                            {log.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      )}
+
+
+      {/* --- TAB: MESSAGE QUEUE & PACING CONSOLE --- */}
+      {activeTab === 'message_queue' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-black text-slate-800 dark:text-white">WhatsApp Pacing Message Queue</h2>
+              <span className="text-[10px] text-gray-400 uppercase font-bold text-slate-400">Background sequencer: dispatches broadcasts one-by-one with 15–30s random delay to protect phone reputation</span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setQueueTab('tracker')}
+                className={`px-4 py-2 text-xs font-bold rounded-xl transition cursor-pointer ${
+                  queueTab === 'tracker'
+                    ? 'bg-amber-500 text-slate-950 font-black'
+                    : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-slate-100 dark:border-gray-750 hover:bg-slate-50'
+                }`}
+              >
+                Queue Tracker
+              </button>
+              <button
+                onClick={() => setQueueTab('ledger')}
+                className={`px-4 py-2 text-xs font-bold rounded-xl transition cursor-pointer ${
+                  queueTab === 'ledger'
+                    ? 'bg-amber-500 text-slate-950 font-black'
+                    : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-slate-100 dark:border-gray-750 hover:bg-slate-50'
+                }`}
+              >
+                Delivery Ledger
+              </button>
+              <button
+                onClick={() => setQueueTab('broadcaster')}
+                className={`px-4 py-2 text-xs font-bold rounded-xl transition cursor-pointer ${
+                  queueTab === 'broadcaster'
+                    ? 'bg-amber-500 text-slate-950 font-black'
+                    : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-slate-100 dark:border-gray-750 hover:bg-slate-50'
+                }`}
+              >
+                Bulk Broadcaster
+              </button>
+            </div>
+          </div>
+
+          {queueMessage && (
+            <div className={`p-4 rounded-2xl flex items-center gap-3 text-xs border ${
+              queueMessage.type === 'success'
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-450'
+                : 'bg-red-500/10 border-red-500/20 text-red-600 dark:text-red-450'
+            }`}>
+              <CheckCircle className="w-5 h-5 flex-shrink-0" />
+              <span className="font-bold leading-relaxed">{queueMessage.text}</span>
+            </div>
+          )}
+
+          {/* TAB CONTENT: TRACKER */}
+          {queueTab === 'tracker' && (
+            <div className="space-y-6">
+              {/* Stats overview cards */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white dark:bg-gray-800 p-4.5 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
+                    <Clock className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-gray-400 uppercase font-black block tracking-wider">Pending Release</span>
+                    <span className="text-lg font-black text-slate-800 dark:text-white">
+                      {messageQueue.filter(x => x.queueStatus === 'Pending').length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-gray-800 p-4.5 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-teal-500/10 text-teal-600 flex items-center justify-center">
+                    <RefreshCw className="w-5 h-5 animate-spin" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-gray-400 uppercase font-black block tracking-wider">Active Sending</span>
+                    <span className="text-lg font-black text-slate-800 dark:text-white">
+                      {messageQueue.filter(x => x.queueStatus === 'Processing').length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-gray-800 p-4.5 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+                    <CheckCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-gray-400 uppercase font-black block tracking-wider">Delivered</span>
+                    <span className="text-lg font-black text-slate-800 dark:text-white">
+                      {messageQueue.filter(x => x.queueStatus === 'Sent').length}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white dark:bg-gray-800 p-4.5 rounded-3xl border border-gray-100 dark:border-gray-700 shadow-xs flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-red-500/10 text-red-600 flex items-center justify-center">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-gray-400 uppercase font-black block tracking-wider">Failed Attempts</span>
+                    <span className="text-lg font-black text-slate-800 dark:text-white">
+                      {messageQueue.filter(x => x.queueStatus === 'Failed').length}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Toolbar */}
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-750 flex flex-col sm:flex-row justify-between items-center gap-3">
+                <div className="relative w-full sm:max-w-xs">
+                  <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search queue recipients..."
+                    value={queueSearch}
+                    onChange={(e) => setQueueSearch(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl pl-9 pr-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-800 dark:text-white font-semibold"
+                  />
+                </div>
+
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <button
+                    onClick={handleRetryAllFailedQueueItems}
+                    disabled={messageQueue.filter(x => x.queueStatus === 'Failed').length === 0}
+                    className="flex-1 sm:flex-none px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Retry Failed Items
+                  </button>
+                  <button
+                    onClick={handleClearCompletedQueueItems}
+                    className="flex-1 sm:flex-none px-4 py-2 bg-slate-100 dark:bg-gray-700 hover:bg-slate-200 dark:hover:bg-gray-600 text-slate-700 dark:text-slate-200 font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Purge History
+                  </button>
+                </div>
+              </div>
+
+              {/* Queue Items Table */}
+              <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-gray-700/60 text-slate-400 font-extrabold uppercase text-[10px]">
+                        <th className="py-3 px-4">Recipient</th>
+                        <th className="py-3 px-4">Phone Number</th>
+                        <th className="py-3 px-4">Type</th>
+                        <th className="py-3 px-4">Message Preview</th>
+                        <th className="py-3 px-4">Retries</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-gray-700/40 text-slate-600 dark:text-slate-350 font-semibold">
+                      {(() => {
+                        const filtered = messageQueue.filter(item => {
+                          if (!item) return false;
+                          const name = (item.firstName || '').toLowerCase();
+                          const num = (item.whatsappNumber || '').toLowerCase();
+                          const query = queueSearch.toLowerCase();
+                          return name.includes(query) || num.includes(query);
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={7} className="py-12 text-center text-gray-400 font-bold">
+                                No messages currently in active queue. Set up a birthday run or trigger a broadcast.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filtered.map((item) => (
+                          <tr key={item.id} className="hover:bg-slate-50/40 dark:hover:bg-gray-950 transition-colors">
+                            <td className="py-3 px-4">
+                              <span className="font-black text-slate-800 dark:text-white block">{item.firstName}</span>
+                            </td>
+                            <td className="py-3 px-4 font-mono text-slate-500">{item.whatsappNumber}</td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-gray-700 text-[10px] font-bold text-slate-500">
+                                {item.messageType || 'General'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 max-w-xs truncate" title={item.messageContent}>
+                              {item.messageContent}
+                            </td>
+                            <td className="py-3 px-4 font-mono font-bold text-center sm:text-left">{item.retryCount || 0} / 3</td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                item.queueStatus === 'Pending'
+                                  ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                                  : item.queueStatus === 'Processing'
+                                    ? 'bg-teal-50 text-teal-700 border border-teal-200'
+                                    : item.queueStatus === 'Sent'
+                                      ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                      : 'bg-red-100 text-red-700 border border-red-200'
+                              }`}>
+                                {item.queueStatus}
+                              </span>
+                              {item.errorMessage && (
+                                <span className="block text-[8px] text-red-500 font-semibold mt-1 max-w-[150px] truncate" title={item.errorMessage}>
+                                  {item.errorMessage}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              {item.queueStatus === 'Failed' && (
+                                <button
+                                  onClick={() => handleRetrySingleQueueItem(item.id)}
+                                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[10px] font-black uppercase cursor-pointer"
+                                  title="Retry delivery now"
+                                >
+                                  Retry
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB CONTENT: LEDGER */}
+          {queueTab === 'ledger' && (
+            <div className="space-y-6">
+              {/* Filter tools */}
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl border border-gray-100 dark:border-gray-750 flex justify-between items-center gap-3">
+                <div className="relative w-full max-w-sm">
+                  <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search logs by recipient or phone..."
+                    value={logsSearch}
+                    onChange={(e) => setLogsSearch(e.target.value)}
+                    className="w-full bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl pl-9 pr-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500 text-slate-800 dark:text-white font-semibold"
+                  />
+                </div>
+              </div>
+
+              {/* Delivery logs table */}
+              <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-gray-700/60 text-slate-400 font-extrabold uppercase text-[10px]">
+                        <th className="py-3 px-4">Date/Time</th>
+                        <th className="py-3 px-4">Recipient</th>
+                        <th className="py-3 px-4">WhatsApp Number</th>
+                        <th className="py-3 px-4">Type</th>
+                        <th className="py-3 px-4">Message Log</th>
+                        <th className="py-3 px-4">Delivery Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-gray-700/40 text-slate-600 dark:text-slate-350 font-semibold">
+                      {(() => {
+                        const filtered = messageLogs.filter(log => {
+                          if (!log) return false;
+                          const name = (log.recipientName || '').toLowerCase();
+                          const num = (log.whatsappNumber || '').toLowerCase();
+                          const query = logsSearch.toLowerCase();
+                          return name.includes(query) || num.includes(query);
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={6} className="py-12 text-center text-gray-400 font-bold">
+                                No delivery logs found matching database filters.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filtered.slice().reverse().map((log) => (
+                          <tr key={log.id} className="hover:bg-slate-50/40 dark:hover:bg-gray-950 transition-colors">
+                            <td className="py-3 px-4 font-mono text-[10px]">
+                              {log.dateSent} {log.timeSent}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className="font-black text-slate-800 dark:text-white block">{log.recipientName}</span>
+                            </td>
+                            <td className="py-3 px-4 font-mono text-slate-500">{log.whatsappNumber}</td>
+                            <td className="py-3 px-4">
+                              <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-gray-700 text-[10px] font-bold text-slate-500">
+                                {log.messageType}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 max-w-xs truncate" title={log.personalizedMessage}>
+                              {log.personalizedMessage}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                log.deliveryStatus === 'Delivered'
+                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                  : 'bg-red-100 text-red-700 border border-red-200'
+                              }`}>
+                                {log.deliveryStatus}
+                              </span>
+                              {log.errorMessage && (
+                                <span className="block text-[8px] text-red-500 font-semibold mt-1 max-w-[150px] truncate" title={log.errorMessage}>
+                                  {log.errorMessage}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB CONTENT: BROADCASTER */}
+          {queueTab === 'broadcaster' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Form panel */}
+              <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xl lg:col-span-2">
+                <div className="flex items-center gap-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                  <Send className="w-5 h-5 text-amber-500" />
+                  <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Compose Paced Broadcast</h3>
+                </div>
+
+                <div className="space-y-4 text-xs font-semibold">
+                  <div>
+                    <label className="block text-[10px] text-gray-400 uppercase font-black tracking-wider mb-1">Target Segment</label>
+                    <select
+                      value={broadcastSegment}
+                      onChange={(e: any) => setBroadcastSegment(e.target.value)}
+                      className="w-full bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl px-3 py-2.5 text-xs font-bold focus:outline-none focus:border-amber-500 text-slate-800 dark:text-white cursor-pointer"
+                    >
+                      <option value="members">Members Segment ({members.length})</option>
+                      <option value="workers">Workers & Volunteers Segment ({workers.length})</option>
+                      <option value="first_timers">First Timers Segment ({firstTimers.length})</option>
+                      <option value="heads_of_departments">Heads of Departments ({hods.length})</option>
+                      <option value="all">All Combined ({members.length + workers.length + firstTimers.length})</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] text-gray-400 uppercase font-black tracking-wider mb-1">Message Body</label>
+                    <textarea
+                      rows={6}
+                      value={broadcastContent}
+                      onChange={(e) => setBroadcastContent(e.target.value)}
+                      placeholder="e.g. Happy Sunday {firstName}! Join us today for Word Cafe at House of Glory by 9:00 AM. God bless you!"
+                      className="w-full bg-slate-50 dark:bg-gray-900 border border-slate-100 dark:border-gray-700 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-amber-500 text-slate-800 dark:text-white leading-relaxed outline-none"
+                    />
+                    <div className="mt-1.5 flex flex-wrap gap-2 text-[10px] text-gray-400">
+                      <span>Interpolation tags:</span>
+                      <button
+                        onClick={() => setBroadcastContent(prev => prev + '{firstName}')}
+                        className="font-mono font-bold text-amber-600 hover:underline cursor-pointer bg-amber-500/10 px-1 py-0.5 rounded"
+                      >
+                        {`{firstName}`}
+                      </button>
+                      <button
+                        onClick={() => setBroadcastContent(prev => prev + '{fullName}')}
+                        className="font-mono font-bold text-amber-600 hover:underline cursor-pointer bg-amber-500/10 px-1 py-0.5 rounded"
+                      >
+                        {`{fullName}`}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={handleQueueBroadcast}
+                      disabled={isQueueLoading}
+                      className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 font-extrabold text-slate-950 text-xs uppercase tracking-wider rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      {isQueueLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4 text-slate-950" />}
+                      Enqueue Broadcast Sequentially
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Informational sidebar panel */}
+              <div className="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-5 space-y-4 shadow-xl">
+                <div className="flex items-center gap-2 pb-2 border-b border-gray-100 dark:border-gray-700">
+                  <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                  <h3 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Queue Policy & Controls</h3>
+                </div>
+
+                <div className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-455 space-y-3 font-semibold">
+                  <p>
+                    RCCG House of Glory utilizes an offline-first **Sequential Message Dispatch** algorithm to protect the church's mobile sender reputation and prevent anti-spam triggers:
+                  </p>
+                  <ul className="list-disc pl-4 space-y-2">
+                    <li>
+                      <strong className="text-slate-700 dark:text-white">Ordered Sequencing:</strong> Messages are processed sequentially in the order they were queued.
+                    </li>
+                    <li>
+                      <strong className="text-slate-700 dark:text-white">Random Delay Pacing:</strong> After each message is delivered, the processor sleeps for a randomized period between <span className="font-bold text-amber-600 font-mono">15 and 30 seconds</span> before attempting the next.
+                    </li>
+                    <li>
+                      <strong className="text-slate-700 dark:text-white">Fail-Safe Retries:</strong> If a delivery failure occurs, the item is retained and rescheduled for up to <span className="font-bold">3 attempts</span> before being marked as Failed.
+                    </li>
+                    <li>
+                      <strong className="text-slate-700 dark:text-white">Server-Restart Resilience:</strong> If the cloud server restarts while processing, the system resumes automatically from the last unsent item on startup.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
 
       {/* --- RECORD DETAILED VIEW PROFILE DETAIL PROFILE MODAL DIALOG --- */}

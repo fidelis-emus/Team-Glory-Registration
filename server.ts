@@ -1,7 +1,8 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { MongoClient, ObjectId } from 'mongodb';
+import pg from 'pg';
+import AdmZip from 'adm-zip';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
@@ -63,7 +64,7 @@ function initLocalServerDb() {
         logoBase64: null,
         headerTitle: 'RCCG HOUSE OF GLORY, YP2',
         headerSubtitle: 'TEAM GLORY',
-        birthdayTemplate: "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.",
+        birthdayTemplate: "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.",
         footerText: '© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL'
       }
     };
@@ -90,126 +91,702 @@ function writeLocalDb(data: any) {
   }
 }
 
-// --- MONGODB CONNECTION & DATA ACCESS LAYER ---
-const MONGODB_URI = process.env.MONGODB_URI;
-let mongoClient: MongoClient | null = null;
-let mongoDb: any = null;
-let lastMongoConnectAttempt = 0;
-const MONGO_COOLDOWN_MS = 15000; // Retry throttling down to 15s
-let mongoConnectionFailedPermanently = false;
-
-async function getMongoDb() {
-  if (mongoDb) return mongoDb;
-  if (!MONGODB_URI) {
-    return null;
-  }
-
-  // Detect and bypass clear placeholders or unconfigured credentials
-  if (
-    MONGODB_URI.includes('xxxxx') || 
-    MONGODB_URI.includes('<username>') || 
-    MONGODB_URI.includes('<password>') ||
-    MONGODB_URI.includes('YOUR_MONGODB_URI')
-  ) {
-    if (!mongoConnectionFailedPermanently) {
-      console.warn('[Database] MONGODB_URI contains a placeholder. Live connection bypassed; using local DB.');
-      mongoConnectionFailedPermanently = true;
-    }
-    return null;
-  }
-
-  if (mongoConnectionFailedPermanently) return null;
-
-  const now = Date.now();
-  if (now - lastMongoConnectAttempt < MONGO_COOLDOWN_MS) {
-    return null;
-  }
-
-  lastMongoConnectAttempt = now;
-
-  try {
-    if (!mongoClient) {
-      mongoClient = new MongoClient(MONGODB_URI, {
-        connectTimeoutMS: 5000,
-        socketTimeoutMS: 5000,
-        serverSelectionTimeoutMS: 5000
-      });
-      await mongoClient.connect();
-      console.log('[Database] Connected successfully to live MongoDB server.');
-    }
-    mongoDb = mongoClient.db();
-    
-    // Seed database if empty
-    await bootstrapMongoCollections(mongoDb);
-
-    return mongoDb;
-  } catch (err: any) {
-    console.error('[Database] MongoDB failed to connect, falling back to local file:', err.message);
-    // DO NOT set mongoConnectionFailedPermanently to true on network/DNS timeout errors so it is able to automatically reconnect later!
-    return null;
-  }
+function getArrayFromLocal(local: any, collName: string): any[] {
+  return Array.isArray(local[collName]) ? local[collName] : [];
 }
 
-async function bootstrapMongoCollections(dbInstance: any) {
+// --- POSTGRESQL CONNECTION & DATA ACCESS LAYER ---
+const { Pool } = pg;
+
+const TABLE_SCHEMAS: Record<string, string> = {
+  admins_accounts: `
+    CREATE TABLE IF NOT EXISTS admins_accounts (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      role VARCHAR(50) NOT NULL,
+      department VARCHAR(100) DEFAULT 'None',
+      "isFirstLogin" BOOLEAN DEFAULT TRUE,
+      "requiresPasswordReset" BOOLEAN DEFAULT FALSE,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  admins: `
+    CREATE TABLE IF NOT EXISTS admins (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      role VARCHAR(50) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  users: `
+    CREATE TABLE IF NOT EXISTS users (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      email VARCHAR(255) UNIQUE,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  roles: `
+    CREATE TABLE IF NOT EXISTS roles (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "roleName" VARCHAR(255) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  permissions: `
+    CREATE TABLE IF NOT EXISTS permissions (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "permissionName" VARCHAR(255) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  first_timers: `
+    CREATE TABLE IF NOT EXISTS first_timers (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "residentialAddress" TEXT,
+      "firstUnit" VARCHAR(255),
+      "secondUnit" VARCHAR(255),
+      "assignedHodId" VARCHAR(255),
+      "lastBirthdayBlessedYear" INTEGER DEFAULT 0,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  first_timer_workers: `
+    CREATE TABLE IF NOT EXISTS first_timer_workers (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "residentialAddress" TEXT,
+      "firstUnit" VARCHAR(255),
+      "secondUnit" VARCHAR(255),
+      "assignedHodId" VARCHAR(255),
+      "lastBirthdayBlessedYear" INTEGER DEFAULT 0,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  members: `
+    CREATE TABLE IF NOT EXISTS members (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "residentialAddress" TEXT,
+      "firstUnit" VARCHAR(255),
+      "secondUnit" VARCHAR(255),
+      "assignedHodId" VARCHAR(255),
+      "lastBirthdayBlessedYear" INTEGER DEFAULT 0,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  member_workers: `
+    CREATE TABLE IF NOT EXISTS member_workers (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "residentialAddress" TEXT,
+      "firstUnit" VARCHAR(255),
+      "secondUnit" VARCHAR(255),
+      "assignedHodId" VARCHAR(255),
+      "lastBirthdayBlessedYear" INTEGER DEFAULT 0,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  workers: `
+    CREATE TABLE IF NOT EXISTS workers (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "residentialAddress" TEXT,
+      "firstUnit" VARCHAR(255),
+      "secondUnit" VARCHAR(255),
+      "assignedHodId" VARCHAR(255),
+      "lastBirthdayBlessedYear" INTEGER DEFAULT 0,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  training_registrations: `
+    CREATE TABLE IF NOT EXISTS training_registrations (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "trainingProgram" VARCHAR(255),
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  house_fellowship_registrations: `
+    CREATE TABLE IF NOT EXISTS house_fellowship_registrations (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "areaNeighbourhood" VARCHAR(255),
+      "closestLandmark" VARCHAR(255),
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  interest_groups: `
+    CREATE TABLE IF NOT EXISTS interest_groups (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      gender VARCHAR(50) NOT NULL,
+      email VARCHAR(255),
+      "phoneNumber" VARCHAR(100),
+      "whatsappNumber" VARCHAR(100),
+      "dateOfBirth" VARCHAR(100),
+      "activeInterests" TEXT,
+      occupation VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  ministry_units: `
+    CREATE TABLE IF NOT EXISTS ministry_units (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "unitName" VARCHAR(255) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  recommendations: `
+    CREATE TABLE IF NOT EXISTS recommendations (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  audit_logs: `
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      action VARCHAR(255) NOT NULL,
+      details TEXT,
+      operator VARCHAR(255),
+      "ipAddress" VARCHAR(100),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  system_settings: `
+    CREATE TABLE IF NOT EXISTS system_settings (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "settingKey" VARCHAR(255) NOT NULL UNIQUE,
+      "settingValue" TEXT,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  backups: `
+    CREATE TABLE IF NOT EXISTS backups (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "backupName" VARCHAR(255) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      size INTEGER,
+      status VARCHAR(50),
+      "createdBy" VARCHAR(255),
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  password_resets: `
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      email VARCHAR(255) NOT NULL,
+      token VARCHAR(255) NOT NULL,
+      "expiresAt" VARCHAR(100) NOT NULL,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  heads_of_departments: `
+    CREATE TABLE IF NOT EXISTS heads_of_departments (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "fullName" VARCHAR(255) NOT NULL,
+      department VARCHAR(255) NOT NULL,
+      email VARCHAR(255),
+      phone VARCHAR(100),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  birthday_notifications: `
+    CREATE TABLE IF NOT EXISTS birthday_notifications (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "recipientName" VARCHAR(255),
+      "recipientNumber" VARCHAR(255),
+      "whatsappNumber" VARCHAR(255),
+      "phoneNumber" VARCHAR(255),
+      message TEXT,
+      "sentAt" VARCHAR(100),
+      status VARCHAR(50),
+      "errorDetail" TEXT,
+      "refId" VARCHAR(255),
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  branding_config: `
+    CREATE TABLE IF NOT EXISTS branding_config (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "logoBase64" TEXT,
+      "headerTitle" VARCHAR(255) NOT NULL,
+      "headerSubtitle" VARCHAR(255) NOT NULL,
+      "birthdayTemplate" TEXT,
+      "footerText" VARCHAR(255) NOT NULL,
+      "createdAt" VARCHAR(100) DEFAULT CURRENT_TIMESTAMP::text,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  system_license: `
+    CREATE TABLE IF NOT EXISTS system_license (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "licenseKey" VARCHAR(255) NOT NULL,
+      "activatedAt" VARCHAR(100) NOT NULL,
+      "expiresAt" VARCHAR(100) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      tier VARCHAR(50) NOT NULL,
+      "createdAt" VARCHAR(100) DEFAULT CURRENT_TIMESTAMP::text,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  restore_logs: `
+    CREATE TABLE IF NOT EXISTS restore_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "restoreDate" VARCHAR(100) NOT NULL,
+      "backupUsed" VARCHAR(255) NOT NULL,
+      "restoredBy" VARCHAR(255) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      duration VARCHAR(100) NOT NULL,
+      errors TEXT,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  message_queue: `
+    CREATE TABLE IF NOT EXISTS message_queue (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "recipientId" VARCHAR(255),
+      "firstName" VARCHAR(255),
+      "whatsappNumber" VARCHAR(100),
+      "messageType" VARCHAR(100),
+      "messageContent" TEXT,
+      "queueStatus" VARCHAR(50) DEFAULT 'Pending',
+      "retryCount" INTEGER DEFAULT 0,
+      "scheduledTime" VARCHAR(100),
+      "sentTime" VARCHAR(100),
+      "errorMessage" TEXT,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `,
+  message_logs: `
+    CREATE TABLE IF NOT EXISTS message_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      uuid UUID DEFAULT gen_random_uuid(),
+      "recipientName" VARCHAR(255),
+      "whatsappNumber" VARCHAR(100),
+      "messageType" VARCHAR(100),
+      "personalizedMessage" TEXT,
+      "dateSent" VARCHAR(100),
+      "timeSent" VARCHAR(100),
+      "deliveryStatus" VARCHAR(50),
+      "readStatus" VARCHAR(50),
+      "providerResponse" TEXT,
+      "errorMessage" TEXT,
+      "createdAt" VARCHAR(100) NOT NULL,
+      "updatedAt" VARCHAR(100),
+      "deletedAt" VARCHAR(100),
+      "createdBy" VARCHAR(255),
+      "updatedBy" VARCHAR(255),
+      data JSONB
+    );
+  `
+};
+
+let pgPool: pg.Pool | null = null;
+let usePostgres = false;
+let lastPostgresConnectAttempt = 0;
+const POSTGRES_COOLDOWN_MS = 10000;
+
+async function bootstrapPostgresTables() {
+  if (!pgPool) return;
+  console.log('[Database] Bootstrapping PostgreSQL tables & relational schemas...');
   try {
-    const adminCount = await dbInstance.collection('admins_accounts').countDocuments();
-    if (adminCount === 0) {
-      console.log('[Database-Bootstrap] MongoDB database is blank. Seeding initial accounts & settings...');
-      const localData = readLocalDb();
-      for (const collName of Object.keys(localData)) {
-        const list = localData[collName];
-        if (Array.isArray(list) && list.length > 0) {
-          const seeded = list.map((item: any) => {
-            const id = item.id || 'REC' + Math.random().toString(36).substring(2, 9).toUpperCase();
-            return { ...item, _id: id, id };
-          });
-          await dbInstance.collection(collName).insertMany(seeded);
-          console.log(`[Database-Bootstrap] Seeded collection "${collName}" with ${seeded.length} items.`);
-        } else if (collName === 'branding_config') {
-          const config = localData[collName];
-          await dbInstance.collection('branding_config').replaceOne({ _id: 'main' }, { ...config, _id: 'main', id: 'main' }, { upsert: true });
-          console.log(`[Database-Bootstrap] Seeded collection "branding_config".`);
+    for (const [tableName, schemaSql] of Object.entries(TABLE_SCHEMAS)) {
+      await pgPool.query(schemaSql);
+    }
+    console.log('[Database] PostgreSQL tables bootstrapped successfully.');
+
+    // Seed admin_root
+    const adminCheck = await pgPool.query('SELECT COUNT(*) FROM admins_accounts');
+    if (parseInt(adminCheck.rows[0].count, 10) === 0) {
+      console.log('[Database] Seeding default administrative root user...');
+      await pgPool.query(`
+        INSERT INTO admins_accounts (id, "fullName", email, password, role, department, "isFirstLogin", "requiresPasswordReset", "createdAt")
+        VALUES ('admin_root', 'System Administrator', 'admin@teamglory.com', 'admin123', 'SuperAdmin', 'None', true, false, $1)
+      `, [new Date().toISOString()]);
+    }
+
+    // Seed system_license
+    const licenseCheck = await pgPool.query('SELECT COUNT(*) FROM system_license');
+    if (parseInt(licenseCheck.rows[0].count, 10) === 0) {
+      console.log('[Database] Seeding default active system license...');
+      await pgPool.query(`
+        INSERT INTO system_license (id, "licenseKey", "activatedAt", "expiresAt", status, tier)
+        VALUES ('status', 'GLORY-NET-99X8-44A1-PRO2030', $1, '2030-12-31T23:59:59.000Z', 'ACTIVE', 'Enterprise Pro')
+      `, [new Date().toISOString()]);
+    }
+
+    // Seed branding_config
+    const brandingCheck = await pgPool.query('SELECT COUNT(*) FROM branding_config');
+    if (parseInt(brandingCheck.rows[0].count, 10) === 0) {
+      console.log('[Database] Seeding default branding configuration...');
+      await pgPool.query(`
+        INSERT INTO branding_config (id, "logoBase64", "headerTitle", "headerSubtitle", "birthdayTemplate", "footerText")
+        VALUES ('main', null, 'RCCG HOUSE OF GLORY, YP2', 'TEAM GLORY', 'Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God''s goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.', '© 2026 RCCG HOUSE OF GLORY YP2 - TEAM GLORY CENTRAL')
+      `);
+    }
+
+    // Auto-migrate local JSON DB data to Postgres if empty
+    const local = readLocalDb();
+    for (const key of Object.keys(local)) {
+      if (Array.isArray(local[key]) && local[key].length > 0 && TABLE_SCHEMAS[key]) {
+        const countRes = await pgPool.query(`SELECT COUNT(*) FROM ${key}`).catch(() => null);
+        if (countRes && parseInt(countRes.rows[0].count, 10) === 0) {
+          console.log(`[Database] Auto-migrating ${local[key].length} rows from local JSON DB to PostgreSQL table "${key}"...`);
+          for (const item of local[key]) {
+            await saveCollectionDoc(key, item).catch(err => {
+              console.error(`[Database] Failed to migrate item ${item.id} to table "${key}":`, err.message);
+            });
+          }
         }
       }
     }
   } catch (err: any) {
-    console.error('[Database-Bootstrap] Seeding check error:', err.message);
+    console.error('[Database] PostgreSQL bootstrap failed:', err.message);
   }
 }
 
-function normalizeDoc(doc: any) {
-  if (!doc) return doc;
-  const copy = { ...doc };
-  if (copy._id) {
-    copy.id = copy._id.toString();
+async function getPgPool(): Promise<pg.Pool | null> {
+  if (pgPool) return pgPool;
+
+  const dbUrl = process.env.DATABASE_URL;
+  const dbHost = process.env.DB_HOST;
+
+  if (!dbUrl && !dbHost) {
+    usePostgres = false;
+    return null;
   }
-  return copy;
+
+  const now = Date.now();
+  if (now - lastPostgresConnectAttempt < POSTGRES_COOLDOWN_MS) {
+    return null;
+  }
+  lastPostgresConnectAttempt = now;
+
+  try {
+    let config: pg.PoolConfig = {};
+    if (dbUrl) {
+      config = {
+        connectionString: dbUrl,
+        ssl: dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1') ? false : { rejectUnauthorized: false },
+        max: 20,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+      };
+    } else {
+      config = {
+        host: dbHost,
+        port: parseInt(process.env.DB_PORT || '5432', 10),
+        database: process.env.DB_NAME,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        ssl: dbHost === 'localhost' || dbHost === '127.0.0.1' ? false : { rejectUnauthorized: false },
+        max: 20,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+      };
+    }
+
+    pgPool = new Pool(config);
+
+    // Test connection
+    const client = await pgPool.connect();
+    console.log('[Database] Connected successfully to PostgreSQL production database.');
+    client.release();
+    usePostgres = true;
+
+    await bootstrapPostgresTables();
+
+    return pgPool;
+  } catch (err: any) {
+    console.error('[Database] PostgreSQL connection failed, falling back to local file:', err.message);
+    pgPool = null;
+    usePostgres = false;
+    return null;
+  }
 }
 
-// Helper to safety-coerce offline local objects/arrays to arrays
-function getArrayFromLocal(local: any, collName: string): any[] {
-  const value = local[collName];
-  if (!value) return [];
-  if (Array.isArray(value)) {
-    return value;
+async function queryPg(text: string, params?: any[]) {
+  const pool = await getPgPool();
+  if (pool) {
+    return pool.query(text, params);
   }
-  if (typeof value === 'object') {
-    const item = { ...value, id: value.id || 'main', _id: value._id || 'main' };
-    return [item];
+  throw new Error('PostgreSQL is not available.');
+}
+
+// Unified Duplicate Validation Engine (Checks across all registration tables)
+async function checkDuplicateRegistration(docData: any, currentId?: string) {
+  const name = docData.fullName;
+  const phone = docData.phoneNumber || docData.phone || docData.whatsappNumber;
+  const email = docData.email;
+
+  if (!name && !phone && !email) return;
+
+  const registrationTables = [
+    'first_timers',
+    'first_timer_workers',
+    'members',
+    'member_workers',
+    'workers',
+    'training_registrations',
+    'house_fellowship_registrations',
+    'interest_groups'
+  ];
+
+  for (const table of registrationTables) {
+    let query = `SELECT id, "fullName", "phoneNumber", "whatsappNumber", email FROM ${table} WHERE "deletedAt" IS NULL`;
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (name && name.trim()) {
+      params.push(name.trim());
+      conditions.push(`LOWER("fullName") = LOWER($${params.length})`);
+    }
+    if (phone && phone.trim()) {
+      params.push(phone.trim());
+      conditions.push(`"phoneNumber" = $${params.length} OR "whatsappNumber" = $${params.length}`);
+    }
+    if (email && email.trim()) {
+      params.push(email.trim().toLowerCase());
+      conditions.push(`LOWER(email) = $${params.length}`);
+    }
+
+    if (conditions.length === 0) continue;
+
+    query += ` AND (${conditions.join(' OR ')})`;
+
+    try {
+      const res = await queryPg(query, params);
+      if (res && res.rows.length > 0) {
+        const otherMatch = res.rows.find(row => row.id !== currentId);
+        if (otherMatch) {
+          throw new Error("This person already exists in the database. Duplicate registration is not allowed.");
+        }
+      }
+    } catch (err: any) {
+      if (err.message.includes('Duplicate registration')) {
+        throw err;
+      }
+      // If table doesn't exist yet, bypass safely
+    }
   }
-  return [];
 }
 
 // Unified CRUD Data Access Layers
 async function getCollectionDocs(collName: string): Promise<any[]> {
-  try {
-    const mDb = await getMongoDb();
-    if (mDb) {
-      const items = await mDb.collection(collName).find({}).toArray();
-      return items.map(normalizeDoc);
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    try {
+      const res = await pool.query(`SELECT * FROM ${collName} WHERE "deletedAt" IS NULL`);
+      return res.rows.map((row: any) => {
+        const item = {
+          ...(row.data || {}),
+          ...row,
+        };
+        delete item.data;
+        if (item.id) {
+          item._id = item.id;
+        }
+        return item;
+      });
+    } catch (err: any) {
+      console.error(`[DB] PostgreSQL fetch failed for "${collName}":`, err.message);
     }
-  } catch (err: any) {
-    console.error(`[DB] Fetch collection "${collName}" failed, falling back to local storage:`, err.message);
   }
   // Local fallback
   const local = readLocalDb();
@@ -220,17 +797,77 @@ async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
   const idValue = docData.id || docData._id || 'REC' + Math.random().toString(36).substring(2, 9).toUpperCase();
   const payload = { ...docData, id: idValue, _id: idValue };
 
-  try {
-    const mDb = await getMongoDb();
-    if (mDb) {
-      await mDb.collection(collName).replaceOne({ _id: idValue }, payload, { upsert: true });
-      return payload;
-    }
-  } catch (err: any) {
-    console.error(`[DB] Save document to "${collName}" failed, falling back to local storage:`, err.message);
+  const registrationTables = [
+    'first_timers',
+    'first_timer_workers',
+    'members',
+    'member_workers',
+    'workers',
+    'training_registrations',
+    'house_fellowship_registrations',
+    'interest_groups'
+  ];
+
+  if (registrationTables.includes(collName)) {
+    await checkDuplicateRegistration(payload, idValue);
   }
 
-  // Local write through
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    try {
+      const standardCols = [
+        'id', 'fullName', 'gender', 'email', 'phoneNumber', 'whatsappNumber', 'dateOfBirth',
+        'residentialAddress', 'firstUnit', 'secondUnit', 'assignedHodId', 'lastBirthdayBlessedYear',
+        'occupation', 'createdAt', 'updatedAt', 'deletedAt', 'createdBy', 'updatedBy',
+        'password', 'role', 'department', 'isFirstLogin', 'requiresPasswordReset',
+        'trainingProgram', 'areaNeighbourhood', 'closestLandmark', 'activeInterests',
+        'logoBase64', 'headerTitle', 'headerSubtitle', 'birthdayTemplate', 'footerText',
+        'licenseKey', 'activatedAt', 'expiresAt', 'status', 'tier', 'phone', 'department',
+        'recipientName', 'recipientNumber', 'message', 'sentAt', 'errorDetail', 'refId',
+        'action', 'details', 'operator', 'ipAddress', 'backupName', 'size', 'roleName',
+        'permissionName', 'unitName', 'title', 'description', 'settingKey', 'settingValue',
+        'token',
+        'recipientId', 'firstName', 'messageType', 'messageContent', 'queueStatus', 'retryCount', 'scheduledTime', 'sentTime', 'errorMessage',
+        'personalizedMessage', 'dateSent', 'timeSent', 'deliveryStatus', 'readStatus', 'providerResponse'
+      ];
+
+      const insertCols: string[] = ['id', 'data'];
+      const insertVals: any[] = [idValue, JSON.stringify(payload)];
+      const updateSets: string[] = ['data = EXCLUDED.data'];
+
+      for (const key of Object.keys(payload)) {
+        if (standardCols.includes(key) && key !== 'id') {
+          insertCols.push(`"${key}"`);
+          insertVals.push(payload[key]);
+          updateSets.push(`"${key}" = EXCLUDED."${key}"`);
+        }
+      }
+
+      // If key updatedAt is not set, set it now
+      if (!payload.updatedAt) {
+        insertCols.push(`"updatedAt"`);
+        insertVals.push(new Date().toISOString());
+        updateSets.push(`"updatedAt" = EXCLUDED."updatedAt"`);
+      }
+
+      const query = `
+        INSERT INTO ${collName} (${insertCols.join(', ')})
+        VALUES (${insertVals.map((_, i) => `$${i + 1}`).join(', ')})
+        ON CONFLICT (id) DO UPDATE SET ${updateSets.join(', ')}
+      `;
+
+      await pool.query(query, insertVals);
+      return payload;
+    } catch (err: any) {
+      console.error(`[DB] PostgreSQL save failed for "${collName}":`, err.message);
+      if (err.message.includes('duplicate key') || err.message.includes('unique constraint') || err.message.includes('already exists')) {
+        throw new Error("This record already exists in the database. Duplicate is not allowed.");
+      }
+      throw err;
+    }
+  }
+
+  // Local fallback
   const local = readLocalDb();
   const list = getArrayFromLocal(local, collName);
   const idx = list.findIndex((x: any) => x.id === idValue);
@@ -245,14 +882,26 @@ async function saveCollectionDoc(collName: string, docData: any): Promise<any> {
 }
 
 async function updateCollectionDoc(collName: string, id: string, updatedFields: any): Promise<boolean> {
-  try {
-    const mDb = await getMongoDb();
-    if (mDb) {
-      await mDb.collection(collName).updateOne({ _id: id }, { $set: updatedFields });
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    try {
+      const res = await pool.query(`SELECT * FROM ${collName} WHERE id = $1`, [id]);
+      if (res.rows.length === 0) return false;
+
+      const row = res.rows[0];
+      const merged = {
+        ...(row.data || {}),
+        ...row,
+        ...updatedFields,
+        id,
+      };
+      delete merged.data;
+
+      await saveCollectionDoc(collName, merged);
       return true;
+    } catch (err: any) {
+      console.error(`[DB] PostgreSQL update failed for "${collName}":`, err.message);
     }
-  } catch (err: any) {
-    console.error(`[DB] Update document in "${collName}" failed, falling back to local storage:`, err.message);
   }
 
   // Local fallback
@@ -269,14 +918,15 @@ async function updateCollectionDoc(collName: string, id: string, updatedFields: 
 }
 
 async function deleteCollectionDoc(collName: string, id: string): Promise<boolean> {
-  try {
-    const mDb = await getMongoDb();
-    if (mDb) {
-      await mDb.collection(collName).deleteOne({ _id: id });
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    try {
+      const nowStr = new Date().toISOString();
+      await pool.query(`UPDATE ${collName} SET "deletedAt" = $1 WHERE id = $2`, [nowStr, id]);
       return true;
+    } catch (err: any) {
+      console.error(`[DB] PostgreSQL soft delete failed for "${collName}":`, err.message);
     }
-  } catch (err: any) {
-    console.error(`[DB] Delete document in "${collName}" failed, falling back to local storage:`, err.message);
   }
 
   // Local fallback
@@ -642,6 +1292,114 @@ async function triggerWhatsAppApiMessage(phoneNumber: string, name: string, mess
   }
 }
 
+// Background Queue Processing Engine for WhatsApp Messages
+let isProcessingQueue = false;
+
+async function processWhatsAppQueue(): Promise<void> {
+  if (isProcessingQueue) {
+    console.log('[QueueWorker] Already processing. Active thread is running.');
+    return;
+  }
+  isProcessingQueue = true;
+  console.log('[QueueWorker] Starting message queue processing thread...');
+
+  try {
+    while (true) {
+      const allQueueItems = await getCollectionDocs('message_queue');
+      const pendingItems = allQueueItems
+        .filter((item: any) => item.queueStatus === 'Pending' && !item.deletedAt)
+        .sort((a: any, b: any) => {
+          const timeA = new Date(a.scheduledTime || a.createdAt || 0).getTime();
+          const timeB = new Date(b.scheduledTime || b.createdAt || 0).getTime();
+          return timeA - timeB;
+        });
+
+      if (pendingItems.length === 0) {
+        console.log('[QueueWorker] Queue is empty. Resting thread.');
+        break;
+      }
+
+      const activeItem = pendingItems[0];
+      console.log(`[QueueWorker] Processing item: [${activeItem.id}] for recipient: ${activeItem.firstName} (${activeItem.whatsappNumber})`);
+
+      // Mark as Processing
+      activeItem.queueStatus = 'Processing';
+      activeItem.updatedAt = new Date().toISOString();
+      await saveCollectionDoc('message_queue', activeItem);
+
+      const targetPhone = activeItem.whatsappNumber;
+      const targetName = activeItem.firstName || 'Member';
+      const content = activeItem.messageContent;
+
+      // Send the message (if connection is down, this will return an emulation log)
+      const sendResult = await triggerWhatsAppApiMessage(targetPhone, targetName, content);
+      
+      const now = new Date();
+      activeItem.sentTime = now.toISOString();
+
+      if (sendResult.success) {
+        activeItem.queueStatus = 'Sent';
+        activeItem.errorMessage = null;
+        console.log(`[QueueWorker] Message [${activeItem.id}] sent successfully.`);
+      } else {
+        const retries = activeItem.retryCount || 0;
+        if (retries < 3) {
+          activeItem.queueStatus = 'Pending'; // retry again on next cycle
+          activeItem.retryCount = retries + 1;
+          activeItem.errorMessage = `Retry ${retries + 1} failed: ${sendResult.errorDetail}`;
+          console.warn(`[QueueWorker] Message failed, scheduled for retry: ${activeItem.errorMessage}`);
+        } else {
+          activeItem.queueStatus = 'Failed';
+          activeItem.errorMessage = sendResult.errorDetail || 'Maximum retry threshold exceeded';
+          console.error(`[QueueWorker] Message failed permanently after 3 retries.`);
+        }
+      }
+
+      activeItem.updatedAt = new Date().toISOString();
+      await saveCollectionDoc('message_queue', activeItem);
+
+      // Create detailed message delivery log
+      const logId = 'LOG_' + Math.random().toString(36).substring(2, 11).toUpperCase();
+      const messageLog = {
+        id: logId,
+        recipientName: activeItem.firstName || 'Anonymous Member',
+        whatsappNumber: targetPhone,
+        messageType: activeItem.messageType || 'General',
+        personalizedMessage: content,
+        dateSent: now.toLocaleDateString(),
+        timeSent: now.toLocaleTimeString(),
+        deliveryStatus: activeItem.queueStatus === 'Sent' ? 'Delivered' : (activeItem.queueStatus === 'Pending' ? 'Retrying' : 'Failed'),
+        readStatus: 'Unread',
+        providerResponse: JSON.stringify(sendResult),
+        errorMessage: activeItem.errorMessage || null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      
+      try {
+        await saveCollectionDoc('message_logs', messageLog);
+      } catch (logErr: any) {
+        console.error('[QueueWorker] Failed to write message log:', logErr.message);
+      }
+
+      // If there are more pending messages, introduce a random delay between 15 and 30 seconds
+      const nextQueueCheck = allQueueItems.filter((item: any) => item.id !== activeItem.id && item.queueStatus === 'Pending' && !item.deletedAt);
+      if (nextQueueCheck.length > 0) {
+        const minDelay = 15;
+        const maxDelay = 30;
+        const randomSeconds = Math.floor(Math.random() * (maxDelay - minDelay + 1) + minDelay);
+        console.log(`[QueueWorker] Pacing delay: waiting ${randomSeconds} seconds before delivering the next message...`);
+        await new Promise(resolve => setTimeout(resolve, randomSeconds * 1000));
+      }
+    }
+  } catch (err: any) {
+    console.error('[QueueWorker] Unexpected crash in queue loop:', err.message);
+  } finally {
+    isProcessingQueue = false;
+    console.log('[QueueWorker] Thread released.');
+  }
+}
+
 // Core Birthday Scanner & Notifier using the specific church template
 async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: number, forceRetry: boolean = false) {
   const now = new Date();
@@ -686,7 +1444,7 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
   console.log(`[Scanner] Scanned ${matchedProfiles.length} matching profiles on this date.`);
 
   // Fetch custom birthday message template from branding configuration dynamically
-  let birthdayTemplate = "Happy Birthday from House of Glory. We celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.";
+  let birthdayTemplate = "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.";
   try {
     const list = await getCollectionDocs('branding_config');
     const mainConfig = list.find((x: any) => x.id === 'main');
@@ -705,8 +1463,32 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
       continue;
     }
 
-    // Dynamic, admin-configured birthday message
-    const messageContent = birthdayTemplate;
+    const fName = (profile.fullName || '').trim().split(/\s+/)[0] || 'Member';
+    let messageContent = birthdayTemplate;
+    
+    // Personalize template with requested patterns - ensuring member's and worker's names are always included automatically
+    if (messageContent && (messageContent.includes('{firstName}') || messageContent.includes('{fullName}') || messageContent.includes('{name}'))) {
+      messageContent = messageContent
+        .replace(/{firstName}/g, fName)
+        .replace(/{fullName}/g, profile.fullName || '')
+        .replace(/{name}/g, profile.fullName || '');
+    } else if (messageContent) {
+      // Guarantee name is included by prepending if no tag is present in the template
+      messageContent = `Happy Birthday, ${profile.fullName || fName}!\n\n${messageContent}`;
+    } else {
+      // Direct, beautiful default template matching requested birthday message
+      messageContent = `Happy Birthday, ${fName}!
+
+On behalf of everyone at House of Glory, we celebrate you today.
+
+May the Lord bless you with good health, divine favour, peace, wisdom, and abundant joy in this new year of your life.
+
+Have a wonderful birthday.
+
+God bless you.
+
+House of Glory`;
+    }
     
     const transactionId = 'TXN_' + Math.random().toString(36).substring(2, 11).toUpperCase();
     
@@ -715,12 +1497,31 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
     if (profile.whatsappNumber || profile.phoneNumber || profile.originalData?.whatsappNumber || profile.originalData?.phoneNumber) activeChannels.push('WhatsApp');
 
     const channelStr = activeChannels.length > 0 ? activeChannels.join(' + ') : 'WhatsApp';
-
     const waTarget = profile.whatsappNumber || profile.phoneNumber || profile.originalData?.whatsappNumber || profile.originalData?.phoneNumber;
-    let waResult: { success: boolean; statusLabel: string; errorDetail?: string } = { success: true, statusLabel: 'Sent', errorDetail: '' };
     
     if (waTarget) {
-      waResult = await triggerWhatsAppApiMessage(waTarget, profile.fullName, messageContent);
+      // Write directly to message_queue
+      const queueId = 'QUEUE_' + Math.random().toString(36).substring(2, 11).toUpperCase();
+      const queueItem = {
+        id: queueId,
+        recipientId: profile.id,
+        firstName: fName,
+        whatsappNumber: waTarget,
+        messageType: 'Birthday',
+        messageContent: messageContent,
+        queueStatus: 'Pending',
+        retryCount: 0,
+        scheduledTime: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      try {
+        await saveCollectionDoc('message_queue', queueItem);
+        console.log(`[Scanner] Queued birthday message for ${profile.fullName} in message_queue.`);
+      } catch (queueErr: any) {
+        console.error(`[Scanner] Failed to queue birthday message:`, queueErr.message);
+      }
     }
 
     const notificationLog = {
@@ -732,10 +1533,10 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
       message: messageContent,
       channel: channelStr,
       sentAt: new Date().toISOString(),
-      status: waResult.success ? 'Sent' : 'Failed',
-      errorDetail: waResult.errorDetail || '',
+      status: 'Queued',
+      errorDetail: '',
       refId: transactionId,
-      gateway: 'WhatsApp Baileys (Existing Number)'
+      gateway: 'WhatsApp Message Queue Engine'
     };
 
     try {
@@ -744,11 +1545,14 @@ async function performBirthdayAuditAndNotify(targetMonth?: number, targetDay?: n
         lastBirthdayBlessedYear: currentYear
       });
       notificationsSent.push(notificationLog);
-      console.log(`[Scanner] Wished successfully: ${profile.fullName} (${profile.collection}) - Status: ${notificationLog.status}`);
+      console.log(`[Scanner] Wished/Queued successfully: ${profile.fullName} (${profile.collection})`);
     } catch (saveError: any) {
       console.error(`[Scanner] Error saving birthday state row:`, saveError.message);
     }
   }
+
+  // Fire queue processor asynchronously so it starts picking up items immediately
+  processWhatsAppQueue().catch(err => console.error('[Scanner] Queue process trigger failed:', err.message));
 
   return {
     scannedDate: `${currentMonth + 1}/${currentDay}/${currentYear}`,
@@ -1063,9 +1867,9 @@ serverApp.delete('/api/records/:segment/:id', async (req, res) => {
 serverApp.delete('/api/records/:segment', async (req, res) => {
   const { segment } = req.params;
   try {
-    const mDb = await getMongoDb();
-    if (mDb) {
-      await mDb.collection(segment).deleteMany({});
+    const pool = await getPgPool();
+    if (pool && usePostgres) {
+      await pool.query(`DELETE FROM ${segment}`);
     } else {
       const dbData = readLocalDb();
       dbData[segment] = [];
@@ -1176,9 +1980,30 @@ serverApp.post('/api/birthdays/dispatch-single', async (req, res) => {
     const channelStr = channel === 'Both' ? 'Email + WhatsApp' : (channel || (activeChannels.length > 0 ? activeChannels.join(' + ') : 'WhatsApp'));
 
     const waTarget = whatsappNumber || phoneNumber;
-    let waResult: { success: boolean; statusLabel: string; errorDetail?: string } = { success: true, statusLabel: 'Sent', errorDetail: '' };
     if (waTarget) {
-      waResult = await triggerWhatsAppApiMessage(waTarget, fullName, finalMessage);
+      const fName = (fullName || '').trim().split(/\s+/)[0] || 'Member';
+      const queueId = 'QUEUE_MAN_' + Math.random().toString(36).substring(2, 11).toUpperCase();
+      const queueItem = {
+        id: queueId,
+        recipientId: profileId,
+        firstName: fName,
+        whatsappNumber: waTarget,
+        messageType: 'Manual',
+        messageContent: finalMessage,
+        queueStatus: 'Pending',
+        retryCount: 0,
+        scheduledTime: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      try {
+        await saveCollectionDoc('message_queue', queueItem);
+        // Trigger background processing asynchronously
+        processWhatsAppQueue().catch(err => console.error('[API] processWhatsAppQueue error:', err.message));
+      } catch (err: any) {
+        console.error('[API] Failed to queue manual message:', err.message);
+      }
     }
 
     const logRecord = {
@@ -1190,10 +2015,10 @@ serverApp.post('/api/birthdays/dispatch-single', async (req, res) => {
       message: finalMessage,
       channel: channelStr,
       sentAt: new Date().toISOString(),
-      status: waResult.success ? 'Sent' : 'Failed',
-      errorDetail: waResult.errorDetail || '',
+      status: 'Queued',
+      errorDetail: '',
       refId: transactionId,
-      gateway: 'WhatsApp (+234 902 995 7453) Core Cloud API & Glory-Net SMTP Mailer Node'
+      gateway: 'WhatsApp Message Queue Engine'
     };
 
     await saveCollectionDoc('birthday_notifications', logRecord);
@@ -1205,6 +2030,143 @@ serverApp.post('/api/birthdays/dispatch-single', async (req, res) => {
       success: true,
       log: logRecord
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- MESSAGE QUEUE SYSTEM ENDPOINTS ---
+
+// Fetch all queue items (with search / sorting)
+serverApp.get('/api/message-queue', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('message_queue');
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch all message logs
+serverApp.get('/api/message-logs', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('message_logs');
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Clear soft deleted / completed items
+serverApp.post('/api/message-queue/clear', async (req, res) => {
+  try {
+    const pool = await getPgPool();
+    if (pool && usePostgres) {
+      await pool.query(`DELETE FROM message_queue WHERE "queueStatus" IN ('Sent', 'Failed')`);
+    } else {
+      const local = readLocalDb();
+      local.message_queue = (local.message_queue || []).filter((x: any) => x.queueStatus === 'Pending' || x.queueStatus === 'Processing');
+      writeLocalDb(local);
+    }
+    res.json({ success: true, message: 'Cleaned up sent and failed queue entries.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry single failed queue item
+serverApp.post('/api/message-queue/retry-single', async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'Missing queue item id' });
+
+    const list = await getCollectionDocs('message_queue');
+    const item = list.find((x: any) => x.id === id);
+    if (!item) return res.status(404).json({ error: 'Queue item not found' });
+
+    item.queueStatus = 'Pending';
+    item.retryCount = 0;
+    item.errorMessage = null;
+    item.updatedAt = new Date().toISOString();
+
+    await saveCollectionDoc('message_queue', item);
+    // Trigger background process
+    processWhatsAppQueue().catch(err => console.error('[API] processWhatsAppQueue error:', err.message));
+
+    res.json({ success: true, message: 'Message state reset to Pending and queue processing triggered.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry all failed queue items
+serverApp.post('/api/message-queue/retry-all', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('message_queue');
+    let count = 0;
+    for (const item of list) {
+      if (item.queueStatus === 'Failed' && !item.deletedAt) {
+        item.queueStatus = 'Pending';
+        item.retryCount = 0;
+        item.errorMessage = null;
+        item.updatedAt = new Date().toISOString();
+        await saveCollectionDoc('message_queue', item);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      processWhatsAppQueue().catch(err => console.error('[API] processWhatsAppQueue error:', err.message));
+    }
+
+    res.json({ success: true, count, message: `Successfully rescheduled ${count} failed messages back to Pending.` });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manually queue a custom broadcast message to a set of recipients
+serverApp.post('/api/message-queue/add', async (req, res) => {
+  try {
+    const { recipients, messageType, messageContent } = req.body;
+    if (!recipients || !Array.isArray(recipients) || !messageContent) {
+      return res.status(400).json({ error: 'Invalid payload. Need recipients array and messageContent.' });
+    }
+
+    let queuedCount = 0;
+    for (const r of recipients) {
+      const phone = r.whatsappNumber || r.phoneNumber;
+      if (!phone) continue;
+
+      const fName = (r.fullName || '').trim().split(/\s+/)[0] || 'Member';
+      let personalizedMsg = messageContent;
+      // Replace placeholders
+      personalizedMsg = personalizedMsg.replace(/{firstName}/g, fName).replace(/{fullName}/g, r.fullName || '');
+
+      const queueId = 'QUEUE_' + Math.random().toString(36).substring(2, 11).toUpperCase();
+      const queueItem = {
+        id: queueId,
+        recipientId: r.id || 'MANUAL',
+        firstName: fName,
+        whatsappNumber: phone,
+        messageType: messageType || 'Broadcast',
+        messageContent: personalizedMsg,
+        queueStatus: 'Pending',
+        retryCount: 0,
+        scheduledTime: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await saveCollectionDoc('message_queue', queueItem);
+      queuedCount++;
+    }
+
+    if (queuedCount > 0) {
+      processWhatsAppQueue().catch(err => console.error('[API] processWhatsAppQueue error:', err.message));
+    }
+
+    res.json({ success: true, queuedCount, message: `Successfully queued ${queuedCount} messages.` });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1552,12 +2514,562 @@ cron.schedule('0 8 * * *', async () => {
 });
 
 // Also carry out a quick automatic run 12 seconds after startup for validation & bootstrapping
-setTimeout(() => {
-  console.log('[Scheduler-Startup] Booting automated scan verification sweep...');
+setTimeout(async () => {
+  console.log('[Scheduler-Startup] Booting automated scan verification sweep and queue processor...');
+  
+  // 1. Self-healing: Reset any stuck 'Processing' items back to 'Pending'
+  try {
+    const list = await getCollectionDocs('message_queue');
+    let resetCount = 0;
+    for (const item of list) {
+      if (item.queueStatus === 'Processing' && !item.deletedAt) {
+        item.queueStatus = 'Pending';
+        item.updatedAt = new Date().toISOString();
+        await saveCollectionDoc('message_queue', item);
+        resetCount++;
+      }
+    }
+    console.log(`[QueueWorker-Startup] Recovered ${resetCount} stuck processing message(s) from previous run.`);
+  } catch (err: any) {
+    console.error('[QueueWorker-Startup] Failed to recover stuck messages:', err.message);
+  }
+
+  // 2. Fire birthday audit scanner
   performBirthdayAuditAndNotify()
     .then(results => console.log('[Scheduler-Startup] Boot sweeper complete:', results))
     .catch(err => console.error('[Scheduler-Startup] Boot sweeper failed:', err));
+
+  // 3. Kick off queue worker to process any outstanding pending items
+  processWhatsAppQueue().catch(err => console.error('[QueueWorker-Startup] Queue process trigger failed:', err.message));
 }, 12000);
+
+// --- SYSTEM BACKUP & RESTORE MODULE API ---
+const BACKUPS_DIR = path.join(process.cwd(), 'backups_storage');
+if (!fs.existsSync(BACKUPS_DIR)) {
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+}
+
+// Global list of all database table names for full database dump
+const ALL_TABLE_NAMES = [
+  'admins_accounts',
+  'admins',
+  'users',
+  'roles',
+  'permissions',
+  'first_timers',
+  'first_timer_workers',
+  'members',
+  'member_workers',
+  'workers',
+  'training_registrations',
+  'house_fellowship_registrations',
+  'interest_groups',
+  'ministry_units',
+  'recommendations',
+  'audit_logs',
+  'system_settings',
+  'backups',
+  'password_resets',
+  'heads_of_departments',
+  'birthday_notifications',
+  'branding_config',
+  'system_license',
+  'restore_logs',
+  'message_queue',
+  'message_logs'
+];
+
+// Helper to generate a full system backup in memory or disk
+async function createSystemBackup(createdBy: string): Promise<{ zipBuffer: Buffer; backupName: string; size: number }> {
+  const zip = new AdmZip();
+  const dateStr = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '-');
+  const backupName = `TEAM_GLORY_BACKUP_${dateStr}.zip`;
+
+  // 1. Export database tables
+  const dbDump: Record<string, any[]> = {};
+  
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    for (const tableName of ALL_TABLE_NAMES) {
+      try {
+        const res = await pool.query(`SELECT * FROM ${tableName}`);
+        dbDump[tableName] = res.rows;
+      } catch (err: any) {
+        console.warn(`[Backup] Table ${tableName} export failed (may not exist yet):`, err.message);
+        dbDump[tableName] = [];
+      }
+    }
+  } else {
+    // Falls back to local JSON db if Postgres is not active
+    const local = readLocalDb();
+    for (const key of Object.keys(local)) {
+      dbDump[key] = local[key];
+    }
+  }
+
+  // Add db_dump.json inside ZIP
+  zip.addFile('db_dump.json', Buffer.from(JSON.stringify(dbDump, null, 2), 'utf-8'));
+
+  // 2. Export local files if there are any uploads
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  if (fs.existsSync(uploadsDir)) {
+    try {
+      zip.addLocalFolder(uploadsDir, 'uploads');
+    } catch (err: any) {
+      console.warn('[Backup] Failed to add uploads folder:', err.message);
+    }
+  }
+
+  const zipBuffer = zip.toBuffer();
+  const backupFilePath = path.join(BACKUPS_DIR, backupName);
+  
+  // Write physically to backups_storage for retention
+  fs.writeFileSync(backupFilePath, zipBuffer);
+
+  const size = zipBuffer.length;
+
+  // Insert backup history record
+  try {
+    const backupId = 'BKP' + Math.random().toString(36).substring(2, 9).toUpperCase();
+    await saveCollectionDoc('backups', {
+      id: backupId,
+      backupName,
+      createdAt: new Date().toISOString(),
+      size,
+      status: 'SUCCESS',
+      createdBy
+    });
+
+    // Write to audit logs
+    await saveCollectionDoc('audit_logs', {
+      id: 'AUD' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      action: 'BACKUP_CREATE',
+      details: `Full system backup generated successfully: ${backupName}. Size: ${(size / 1024).toFixed(2)} KB.`,
+      operator: createdBy,
+      ipAddress: '127.0.0.1',
+      createdAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('[Backup Log] Failed to save backup history:', err.message);
+  }
+
+  return { zipBuffer, backupName, size };
+}
+
+// Helper to restore system from backup zip
+async function restoreSystemFromZip(zipPathOrBuffer: string | Buffer, restoredBy: string, backupUsedName: string): Promise<{ success: boolean; duration: number; error?: string }> {
+  const startTime = Date.now();
+  let zip: AdmZip;
+  try {
+    zip = new AdmZip(zipPathOrBuffer);
+  } catch (err: any) {
+    return { success: false, duration: 0, error: 'Invalid backup zip file format.' };
+  }
+
+  const dbDumpEntry = zip.getEntry('db_dump.json');
+  if (!dbDumpEntry) {
+    return { success: false, duration: 0, error: 'Backup is invalid: Missing database dump (db_dump.json).' };
+  }
+
+  let dbDump: Record<string, any[]>;
+  try {
+    dbDump = JSON.parse(dbDumpEntry.getData().toString('utf8'));
+  } catch (err: any) {
+    return { success: false, duration: 0, error: 'Backup is corrupt: Failed to parse db_dump.json.' };
+  }
+
+  // Create temporary safety rollback point before overriding database!
+  let rollbackPoint: { zipBuffer: Buffer; backupName: string } | null = null;
+  try {
+    console.log('[Restore] Creating safety rollback point in memory...');
+    const backupResult = await createSystemBackup('SYSTEM_RESTORE_ROLLBACK_SAFEGUARD');
+    rollbackPoint = backupResult;
+  } catch (err: any) {
+    console.error('[Restore] Safety backup failed, proceeding with caution...', err.message);
+  }
+
+  const pool = await getPgPool();
+  if (pool && usePostgres) {
+    // Postgres live restore
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1. Truncate / clear all database tables
+      console.log('[Restore] Truncating all database tables...');
+      for (const tableName of ALL_TABLE_NAMES) {
+        // We skip backups and restore_logs to preserve history of the operations!
+        if (tableName === 'backups' || tableName === 'restore_logs' || tableName === 'audit_logs') {
+          continue;
+        }
+        await client.query(`TRUNCATE TABLE ${tableName} CASCADE`).catch(e => {
+          // Ignore error if table doesn't support cascade or doesn't exist yet
+        });
+      }
+
+      // 2. Restore tables from the dump
+      console.log('[Restore] Restoring records from backup zip into PostgreSQL...');
+      for (const [tableName, records] of Object.entries(dbDump)) {
+        if (!ALL_TABLE_NAMES.includes(tableName)) continue;
+        // Skip restore logs and backups to prevent self-deletion or history override
+        if (tableName === 'backups' || tableName === 'restore_logs' || tableName === 'audit_logs') {
+          continue;
+        }
+
+        if (!Array.isArray(records)) continue;
+
+        for (const item of records) {
+          const idValue = item.id || item._id;
+          if (!idValue) continue;
+
+          // Re-insert using client to keep transaction integrity
+          const standardCols = [
+            'id', 'fullName', 'gender', 'email', 'phoneNumber', 'whatsappNumber', 'dateOfBirth',
+            'residentialAddress', 'firstUnit', 'secondUnit', 'assignedHodId', 'lastBirthdayBlessedYear',
+            'occupation', 'createdAt', 'updatedAt', 'deletedAt', 'createdBy', 'updatedBy',
+            'password', 'role', 'department', 'isFirstLogin', 'requiresPasswordReset',
+            'trainingProgram', 'areaNeighbourhood', 'closestLandmark', 'activeInterests',
+            'logoBase64', 'headerTitle', 'headerSubtitle', 'birthdayTemplate', 'footerText',
+            'licenseKey', 'activatedAt', 'expiresAt', 'status', 'tier', 'phone', 'department',
+            'recipientName', 'recipientNumber', 'message', 'sentAt', 'errorDetail', 'refId',
+            'action', 'details', 'operator', 'ipAddress', 'backupName', 'size', 'roleName',
+            'permissionName', 'unitName', 'title', 'description', 'settingKey', 'settingValue',
+            'token'
+          ];
+
+          const insertCols: string[] = ['id', 'data'];
+          const insertVals: any[] = [idValue, JSON.stringify(item)];
+
+          for (const key of Object.keys(item)) {
+            if (standardCols.includes(key) && key !== 'id') {
+              insertCols.push(`"${key}"`);
+              insertVals.push(item[key]);
+            }
+          }
+
+          const query = `
+            INSERT INTO ${tableName} (${insertCols.join(', ')})
+            VALUES (${insertVals.map((_, i) => `$${i + 1}`).join(', ')})
+            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+          `;
+
+          await client.query(query, insertVals);
+        }
+      }
+
+      await client.query('COMMIT');
+      client.release();
+      console.log('[Restore] PostgreSQL live database restored successfully!');
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      client.release();
+      console.error('[Restore] PostgreSQL restore transaction failed! Rolling back...', err.message);
+
+      // Perform automatic rollback to the previous safeguard backup!
+      if (rollbackPoint) {
+        console.warn('[Restore] Restoring safety rollback point to prevent database corruption...');
+        try {
+          const rollbackZip = new AdmZip(rollbackPoint.zipBuffer);
+          const rollbackDbDump = JSON.parse(rollbackZip.getEntry('db_dump.json')!.getData().toString('utf8'));
+          
+          const rollPool = await getPgPool();
+          if (rollPool) {
+            for (const [tName, tRecords] of Object.entries(rollbackDbDump)) {
+              if (!Array.isArray(tRecords)) continue;
+              await rollPool.query(`DELETE FROM ${tName}`).catch(() => {});
+              for (const item of tRecords) {
+                await saveCollectionDoc(tName, item).catch(() => {});
+              }
+            }
+          }
+          console.log('[Restore] Safeguard rollback applied successfully.');
+        } catch (rollErr: any) {
+          console.error('[Restore] CRITICAL: Safeguard rollback failed!', rollErr.message);
+        }
+      }
+
+      const duration = Date.now() - startTime;
+      await saveCollectionDoc('restore_logs', {
+        id: 'RST' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+        restoreDate: new Date().toISOString(),
+        backupUsed: backupUsedName,
+        restoredBy,
+        status: 'FAILED',
+        duration: `${(duration / 1000).toFixed(2)}s`,
+        errors: err.message,
+        createdAt: new Date().toISOString()
+      });
+
+      return { success: false, duration, error: err.message };
+    }
+  } else {
+    // Local fallback restore
+    try {
+      const local = readLocalDb();
+      for (const [key, records] of Object.entries(dbDump)) {
+        local[key] = records;
+      }
+      writeLocalDb(local);
+      console.log('[Restore] Local fallback JSON database restored successfully!');
+    } catch (err: any) {
+      const duration = Date.now() - startTime;
+      return { success: false, duration, error: err.message };
+    }
+  }
+
+  // 3. Restore files
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  const uploadsEntry = zip.getEntry('uploads/');
+  if (uploadsEntry) {
+    try {
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      zip.extractEntryTo('uploads/', process.cwd(), true, true);
+      console.log('[Restore] Uploaded files restored successfully!');
+    } catch (err: any) {
+      console.warn('[Restore] Failed to restore files folder:', err.message);
+    }
+  }
+
+  const duration = Date.now() - startTime;
+
+  // Insert restore log record
+  try {
+    await saveCollectionDoc('restore_logs', {
+      id: 'RST' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      restoreDate: new Date().toISOString(),
+      backupUsed: backupUsedName,
+      restoredBy,
+      status: 'SUCCESS',
+      duration: `${(duration / 1000).toFixed(2)}s`,
+      errors: null,
+      createdAt: new Date().toISOString()
+    });
+
+    // Write to audit logs
+    await saveCollectionDoc('audit_logs', {
+      id: 'AUD' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      action: 'SYSTEM_RESTORE',
+      details: `Full system restore from backup archive complete: ${backupUsedName}. Time taken: ${(duration / 1000).toFixed(2)}s.`,
+      operator: restoredBy,
+      ipAddress: '127.0.0.1',
+      createdAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    console.error('[Restore Log] Failed to save restore log:', err.message);
+  }
+
+  return { success: true, duration };
+}
+
+// -------------------------------------------------------------
+// BACKUP & RESTORE ROUTE ENDPOINTS
+// -------------------------------------------------------------
+
+// Fetch full list of backup logs
+serverApp.get('/api/backups', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('backups');
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create manual backup
+serverApp.post('/api/backups/create', async (req, res) => {
+  const { createdBy } = req.body;
+  try {
+    const result = await createSystemBackup(createdBy || 'SuperAdmin');
+    res.json({ success: true, backupName: result.backupName, size: result.size });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Download a backup file
+serverApp.get('/api/backups/download/:filename', (req, res) => {
+  const { filename } = req.params;
+  const filePath = path.join(BACKUPS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Backup file not found on disk.' });
+  }
+  res.download(filePath, filename);
+});
+
+// Restore backup from uploaded file
+serverApp.post('/api/backups/restore', async (req, res) => {
+  const { fileDataBase64, restoredBy, filename } = req.body;
+  if (!fileDataBase64) {
+    return res.status(400).json({ error: 'Missing backup file content.' });
+  }
+
+  try {
+    const buffer = Buffer.from(fileDataBase64, 'base64');
+    const result = await restoreSystemFromZip(buffer, restoredBy || 'SuperAdmin', filename || 'UploadedZip');
+    if (result.success) {
+      res.json({ success: true, duration: result.duration });
+    } else {
+      res.status(500).json({ error: result.error });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a backup from disk & database
+serverApp.delete('/api/backups/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const list = await getCollectionDocs('backups');
+    const item = list.find(x => x.id === id);
+    if (item) {
+      const filePath = path.join(BACKUPS_DIR, item.backupName);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    await deleteCollectionDoc('backups', id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieve system restore logs
+serverApp.get('/api/restore-logs', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('restore_logs');
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retrieve system audit logs
+serverApp.get('/api/audit-logs', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('audit_logs');
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch backup settings
+serverApp.get('/api/backups/settings', async (req, res) => {
+  try {
+    const list = await getCollectionDocs('system_settings');
+    const scheduleSetting = list.find(x => x.settingKey === 'backup_schedule');
+    if (scheduleSetting) {
+      res.json(JSON.parse(scheduleSetting.settingValue || '{}'));
+    } else {
+      res.json({
+        frequency: 'Daily',
+        time: '00:00',
+        retentionCount: 10,
+        maxBackupSize: 100 * 1024 * 1024,
+        backupFolder: BACKUPS_DIR,
+        restorePermissions: 'SuperAdminOnly'
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save backup settings
+serverApp.post('/api/backups/settings', async (req, res) => {
+  const settings = req.body;
+  try {
+    const list = await getCollectionDocs('system_settings');
+    const existing = list.find(x => x.settingKey === 'backup_schedule');
+    const payload = {
+      id: existing ? existing.id : 'SET' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+      settingKey: 'backup_schedule',
+      settingValue: JSON.stringify(settings),
+      createdAt: existing ? existing.createdAt : new Date().toISOString()
+    };
+    await saveCollectionDoc('system_settings', payload);
+    
+    reconfigureBackupScheduler(settings);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cron scheduler task handles
+let activeBackupCronJob: any = null;
+
+function reconfigureBackupScheduler(settings: any) {
+  if (activeBackupCronJob) {
+    activeBackupCronJob.stop();
+  }
+
+  const { frequency, time } = settings;
+  const [hour, minute] = (time || '00:00').split(':');
+  
+  let cronExpression = '0 0 * * *';
+  
+  if (frequency === 'Daily') {
+    cronExpression = `${minute} ${hour} * * *`;
+  } else if (frequency === 'Weekly') {
+    cronExpression = `${minute} ${hour} * * 0`;
+  } else if (frequency === 'Monthly') {
+    cronExpression = `${minute} ${hour} 1 * *`;
+  }
+
+  console.log(`[Backup Scheduler] Triggering automatic backup job on cron frequency: "${cronExpression}"`);
+  
+  activeBackupCronJob = cron.schedule(cronExpression, async () => {
+    console.log('[Backup Scheduler] Commencing automatic scheduled backup process...');
+    try {
+      const result = await createSystemBackup('AUTOMATED_SCHEDULER_JOB');
+      console.log(`[Backup Scheduler] Automatic backup successful: ${result.backupName} (${(result.size / 1024).toFixed(2)} KB)`);
+
+      const backups = await getCollectionDocs('backups');
+      const limit = settings.retentionCount || 10;
+      if (backups.length > limit) {
+        const sorted = backups.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        const toDeleteCount = sorted.length - limit;
+        console.log(`[Backup Scheduler] Deleting ${toDeleteCount} old backups due to retention policy limit of ${limit}...`);
+        
+        for (let i = 0; i < toDeleteCount; i++) {
+          const item = sorted[i];
+          const fileLoc = path.join(BACKUPS_DIR, item.backupName);
+          if (fs.existsSync(fileLoc)) {
+            fs.unlinkSync(fileLoc);
+          }
+          await deleteCollectionDoc('backups', item.id);
+        }
+      }
+    } catch (err: any) {
+      console.error('[Backup Scheduler] Automatic backup failed:', err.message);
+    }
+  });
+}
+
+// Set up default cron schedule on startup
+setTimeout(async () => {
+  try {
+    const list = await getCollectionDocs('system_settings');
+    const scheduleSetting = list.find(x => x.settingKey === 'backup_schedule');
+    if (scheduleSetting) {
+      reconfigureBackupScheduler(JSON.parse(scheduleSetting.settingValue));
+    } else {
+      reconfigureBackupScheduler({
+        frequency: 'Daily',
+        time: '00:00',
+        retentionCount: 10
+      });
+    }
+  } catch (err: any) {
+    console.error('[Backup Startup] Failed to initialize scheduler cron:', err.message);
+  }
+}, 5000);
 
 // --- MOUNT VITE MIDDLEWARE OR SERVE PRODUCTION BUNDLE ---
 async function startServer() {
