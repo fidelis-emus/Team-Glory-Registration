@@ -2718,39 +2718,42 @@ async function restoreSystemFromZip(zipPathOrBuffer: string | Buffer, restoredBy
 
         if (!Array.isArray(records)) continue;
 
+        // Fetch actual table columns from PostgreSQL schema to avoid column mismatch crashes
+        let validTableCols: string[] = [];
+        try {
+          const colsRes = await client.query(
+            `SELECT column_name FROM information_schema.columns WHERE table_name = $1`,
+            [tableName]
+          );
+          validTableCols = colsRes.rows.map((r: any) => r.column_name);
+        } catch (colErr: any) {
+          console.warn(`[Restore] Failed to fetch columns for table ${tableName}:`, colErr.message);
+        }
+
         for (const item of records) {
           const idValue = item.id || item._id;
           if (!idValue) continue;
-
-          // Re-insert using client to keep transaction integrity
-          const standardCols = [
-            'id', 'fullName', 'gender', 'email', 'phoneNumber', 'whatsappNumber', 'dateOfBirth',
-            'residentialAddress', 'firstUnit', 'secondUnit', 'assignedHodId', 'lastBirthdayBlessedYear',
-            'occupation', 'createdAt', 'updatedAt', 'deletedAt', 'createdBy', 'updatedBy',
-            'password', 'role', 'department', 'isFirstLogin', 'requiresPasswordReset',
-            'trainingProgram', 'areaNeighbourhood', 'closestLandmark', 'activeInterests',
-            'logoBase64', 'headerTitle', 'headerSubtitle', 'birthdayTemplate', 'footerText',
-            'licenseKey', 'activatedAt', 'expiresAt', 'status', 'tier', 'phone', 'department',
-            'recipientName', 'recipientNumber', 'message', 'sentAt', 'errorDetail', 'refId',
-            'action', 'details', 'operator', 'ipAddress', 'backupName', 'size', 'roleName',
-            'permissionName', 'unitName', 'title', 'description', 'settingKey', 'settingValue',
-            'token'
-          ];
 
           const insertCols: string[] = ['id', 'data'];
           const insertVals: any[] = [idValue, JSON.stringify(item)];
 
           for (const key of Object.keys(item)) {
-            if (standardCols.includes(key) && key !== 'id') {
+            // Only map keys that are actual valid columns in this specific table (excluding id and data which are handled)
+            if (validTableCols.includes(key) && key !== 'id' && key !== 'data') {
               insertCols.push(`"${key}"`);
               insertVals.push(item[key]);
             }
           }
 
+          // Build a safe ON CONFLICT clause that updates all mapped columns correctly
+          const updateSets = insertCols
+            .filter(col => col !== 'id')
+            .map(col => `${col} = EXCLUDED.${col}`);
+
           const query = `
             INSERT INTO ${tableName} (${insertCols.join(', ')})
             VALUES (${insertVals.map((_, i) => `$${i + 1}`).join(', ')})
-            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+            ON CONFLICT (id) DO UPDATE SET ${updateSets.length > 0 ? updateSets.join(', ') : 'data = EXCLUDED.data'}
           `;
 
           await client.query(query, insertVals);
@@ -2858,6 +2861,33 @@ async function restoreSystemFromZip(zipPathOrBuffer: string | Buffer, restoredBy
     });
   } catch (err: any) {
     console.error('[Restore Log] Failed to save restore log:', err.message);
+  }
+
+  // Save the uploaded zip file to backups_storage so that it shows up in the UI
+  let finalBackupName = backupUsedName || 'UploadedBackup.zip';
+  if (!finalBackupName.toLowerCase().endsWith('.zip')) {
+    finalBackupName += '.zip';
+  }
+  try {
+    const backupFilePath = path.join(BACKUPS_DIR, finalBackupName);
+    if (Buffer.isBuffer(zipPathOrBuffer)) {
+      fs.writeFileSync(backupFilePath, zipPathOrBuffer);
+    } else if (typeof zipPathOrBuffer === 'string') {
+      fs.copyFileSync(zipPathOrBuffer, backupFilePath);
+    }
+
+    const bkpId = 'BKP' + Math.random().toString(36).substring(2, 9).toUpperCase();
+    await saveCollectionDoc('backups', {
+      id: bkpId,
+      backupName: finalBackupName,
+      createdAt: new Date().toISOString(),
+      size: Buffer.isBuffer(zipPathOrBuffer) ? zipPathOrBuffer.length : fs.statSync(zipPathOrBuffer).size,
+      status: 'SUCCESS',
+      createdBy: restoredBy
+    });
+    console.log(`[Restore] Saved and registered uploaded backup as: ${finalBackupName}`);
+  } catch (err: any) {
+    console.warn('[Restore] Failed to save uploaded zip file for retention:', err.message);
   }
 
   return { success: true, duration };

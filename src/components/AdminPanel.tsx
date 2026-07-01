@@ -515,76 +515,77 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
   }, [adminUser]);
 
   // Monitor dynamic configurations and administrative user sessions
-  useEffect(() => {
-    const loadConfigs = async () => {
-      try {
-        const cfg = await safeFetchJson('/api/branding');
-        if (cfg) {
-          setBrandLogo(cfg.logoBase64 || null);
-          setBrandTitle(cfg.headerTitle || '');
-          setBrandSubtitle(cfg.headerSubtitle || '');
-          setBrandFooter(cfg.footerText || '');
-          setBirthdayTemplate(cfg.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
-        }
-      } catch (e) {
-        console.warn('Failed to load branding settings via API:', e);
-        // Fallback to localStorage branding
-        const localBr = localStorage.getItem('team_glory_branding');
-        if (localBr) {
-          try {
-            const parsed = JSON.parse(localBr);
-            setBrandLogo(parsed.logoBase64 || null);
-            setBrandTitle(parsed.headerTitle || '');
-            setBrandSubtitle(parsed.headerSubtitle || '');
-            setBrandFooter(parsed.footerText || '');
-            setBirthdayTemplate(parsed.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
-          } catch (brErr) {}
-        }
+  const fetchBrandingAndConfigs = async () => {
+    try {
+      const cfg = await safeFetchJson('/api/branding');
+      if (cfg) {
+        setBrandLogo(cfg.logoBase64 || null);
+        setBrandTitle(cfg.headerTitle || '');
+        setBrandSubtitle(cfg.headerSubtitle || '');
+        setBrandFooter(cfg.footerText || '');
+        setBirthdayTemplate(cfg.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
       }
-
-      // Load WhatsApp Gateway settings
-      try {
-        const waCfg = await safeFetchJson('/api/whatsapp-settings');
-        if (waCfg) {
-          setWhatsappApiUrl(waCfg.apiUrl || '');
-          setWhatsappApiToken(waCfg.apiToken || '');
-          setWhatsappOfficialNumber(waCfg.officialNumber || '');
-        }
-      } catch (e) {
-        console.warn('Failed to load WhatsApp settings from API, using defaults:', e);
+    } catch (e) {
+      console.warn('Failed to load branding settings via API:', e);
+      // Fallback to localStorage branding
+      const localBr = localStorage.getItem('team_glory_branding');
+      if (localBr) {
+        try {
+          const parsed = JSON.parse(localBr);
+          setBrandLogo(parsed.logoBase64 || null);
+          setBrandTitle(parsed.headerTitle || '');
+          setBrandSubtitle(parsed.headerSubtitle || '');
+          setBrandFooter(parsed.footerText || '');
+          setBirthdayTemplate(parsed.birthdayTemplate || "Happy Birthday, {firstName}! On behalf of everyone at House of Glory, we celebrate you today and pray that God's goodness, favour, and blessings will continually rest upon you. Have a wonderful and blessed birthday. House of Glory cares about you.");
+        } catch (brErr) {}
       }
+    }
 
-      // Load System License from API or local fallback
-      try {
-        const licenseList = await safeFetchJson('/api/records/system_license');
-        if (Array.isArray(licenseList) && licenseList.length > 0) {
-          const statusItem = licenseList.find(x => x.id === 'status');
-          if (statusItem) {
-            const data = statusItem as SystemLicense;
-            const nowTime = new Date().getTime();
-            const expTime = new Date(data.expiresAt).getTime();
-            if (expTime < nowTime) {
-              data.status = 'EXPIRED';
-            }
-            setSystemLicense(data);
-            localStorage.setItem('team_glory_system_license', JSON.stringify(data));
+    // Load WhatsApp Gateway settings
+    try {
+      const waCfg = await safeFetchJson('/api/whatsapp-settings');
+      if (waCfg) {
+        setWhatsappApiUrl(waCfg.apiUrl || '');
+        setWhatsappApiToken(waCfg.apiToken || '');
+        setWhatsappOfficialNumber(waCfg.officialNumber || '');
+      }
+    } catch (e) {
+      console.warn('Failed to load WhatsApp settings from API, using defaults:', e);
+    }
+
+    // Load System License from API or local fallback
+    try {
+      const licenseList = await safeFetchJson('/api/records/system_license');
+      if (Array.isArray(licenseList) && licenseList.length > 0) {
+        const statusItem = licenseList.find(x => x.id === 'status');
+        if (statusItem) {
+          const data = statusItem as SystemLicense;
+          const nowTime = new Date().getTime();
+          const expTime = new Date(data.expiresAt).getTime();
+          if (expTime < nowTime) {
+            data.status = 'EXPIRED';
           }
+          setSystemLicense(data);
+          localStorage.setItem('team_glory_system_license', JSON.stringify(data));
         }
-      } catch (e) {}
-
-      try {
-        const adminsList = await safeFetchJson('/api/admins_accounts');
-        if (adminsList) {
-          setAllAdminAccounts(adminsList);
-          localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
-        }
-      } catch (e) {
-        console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
-        const cached = localStorage.getItem('team_glory_admins_accounts');
-        if (cached) setAllAdminAccounts(JSON.parse(cached));
       }
-    };
-    loadConfigs();
+    } catch (e) {}
+
+    try {
+      const adminsList = await safeFetchJson('/api/admins_accounts');
+      if (adminsList) {
+        setAllAdminAccounts(adminsList);
+        localStorage.setItem('team_glory_admins_accounts', JSON.stringify(adminsList));
+      }
+    } catch (e) {
+      console.warn('Failed to load admins accounts list via API, fallback to Cache:', e);
+      const cached = localStorage.getItem('team_glory_admins_accounts');
+      if (cached) setAllAdminAccounts(JSON.parse(cached));
+    }
+  };
+
+  useEffect(() => {
+    fetchBrandingAndConfigs();
   }, []);
 
   // Dynamic WhatsApp Polling Effect
@@ -6865,6 +6866,8 @@ export default function AdminPanel({ darkMode, sandboxBypassActive, branding }: 
                             const data = await res.json();
                             setBackupMessage({ text: `System database and local files successfully restored! Process complete in ${data.duration}ms.`, type: 'success' });
                             fetchBackupData();
+                            fetchDatabaseRecords();
+                            fetchBrandingAndConfigs();
                           } else {
                             const err = await res.json();
                             throw new Error(err.error || 'Restore failed');
